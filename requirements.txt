@@ -1,0 +1,6 @@
+boto3
+python-dotenv
+# OpenSearch Python client. Talks to Amazon OpenSearch Serverless over HTTPS and
+# ships AWSV4SignerAuth for SigV4 request signing — so no separate signing lib is
+# needed. The reranker and eval judges call Nova through boto3 (no extra deps).
+opensearch-py

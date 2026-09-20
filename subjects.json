@@ -1,0 +1,141 @@
+{
+  "handbook/benefits-and-perks.md": [
+    "pay_and_benefits",
+    "time_off_and_leave"
+  ],
+  "handbook/getting-started.md": [
+    "hiring_and_onboarding"
+  ],
+  "handbook/how-we-work.md": [
+    "devices_security_and_systems",
+    "company_culture_and_norms"
+  ],
+  "handbook/making-a-career.md": [
+    "careers_titles_and_promotions",
+    "performance_and_feedback",
+    "managing_people"
+  ],
+  "handbook/managing-work-devices.md": [
+    "devices_security_and_systems"
+  ],
+  "handbook/moonlighting.md": [
+    "devices_security_and_systems",
+    "managing_people",
+    "company_culture_and_norms"
+  ],
+  "handbook/our-internal-systems.md": [
+    "devices_security_and_systems",
+    "pay_and_benefits",
+    "careers_titles_and_promotions"
+  ],
+  "handbook/our-rituals.md": [
+    "managing_people",
+    "time_off_and_leave",
+    "company_culture_and_norms"
+  ],
+  "handbook/severance.md": [
+    "severance_and_termination"
+  ],
+  "handbook/stateFMLA.md": [
+    "time_off_and_leave"
+  ],
+  "handbook/titles-for-QA.md": [
+    "careers_titles_and_promotions",
+    "performance_and_feedback",
+    "managing_people"
+  ],
+  "handbook/titles-for-designers.md": [
+    "careers_titles_and_promotions",
+    "performance_and_feedback",
+    "managing_people"
+  ],
+  "handbook/titles-for-ops.md": [
+    "careers_titles_and_promotions",
+    "managing_people",
+    "devices_security_and_systems"
+  ],
+  "handbook/titles-for-programmers.md": [
+    "careers_titles_and_promotions"
+  ],
+  "handbook/titles-for-support.md": [
+    "careers_titles_and_promotions",
+    "managing_people"
+  ],
+  "manager_playbook/1-1s.md": [
+    "performance_and_feedback",
+    "managing_people"
+  ],
+  "manager_playbook/README.md": [
+    "managing_people",
+    "hiring_and_onboarding",
+    "performance_and_feedback",
+    "careers_titles_and_promotions"
+  ],
+  "manager_playbook/boundaries.md": [
+    "managing_people",
+    "time_off_and_leave"
+  ],
+  "manager_playbook/coaching.md": [
+    "performance_and_feedback",
+    "managing_people"
+  ],
+  "manager_playbook/conclusion.md": [
+    "hiring_and_onboarding",
+    "careers_titles_and_promotions",
+    "performance_and_feedback",
+    "managing_people"
+  ],
+  "manager_playbook/fundamental-resources.md": [
+    "hiring_and_onboarding",
+    "time_off_and_leave",
+    "severance_and_termination",
+    "managing_people",
+    "devices_security_and_systems",
+    "pay_and_benefits"
+  ],
+  "manager_playbook/giving-feedback.md": [
+    "performance_and_feedback"
+  ],
+  "manager_playbook/hiring.md": [
+    "hiring_and_onboarding"
+  ],
+  "manager_playbook/manager-standards.md": [
+    "managing_people",
+    "performance_and_feedback"
+  ],
+  "manager_playbook/multiplier-managers.md": [
+    "managing_people",
+    "performance_and_feedback",
+    "careers_titles_and_promotions"
+  ],
+  "manager_playbook/navigating-difficult-conversations.md": [
+    "performance_and_feedback",
+    "severance_and_termination",
+    "managing_people"
+  ],
+  "manager_playbook/onboarding.md": [
+    "hiring_and_onboarding",
+    "managing_people"
+  ],
+  "manager_playbook/performance-management-model.md": [
+    "performance_and_feedback",
+    "managing_people"
+  ],
+  "manager_playbook/performance-reviews.md": [
+    "performance_and_feedback",
+    "careers_titles_and_promotions"
+  ],
+  "manager_playbook/promotion.md": [
+    "careers_titles_and_promotions"
+  ],
+  "manager_playbook/recognition.md": [
+    "performance_and_feedback",
+    "pay_and_benefits",
+    "managing_people"
+  ],
+  "manager_playbook/underperformance-and-terminations.md": [
+    "severance_and_termination",
+    "performance_and_feedback",
+    "managing_people"
+  ]
+}
