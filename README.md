@@ -21,7 +21,7 @@ Each stage has one job:
 
 | Stage | Role | Failure behavior |
 |---|---|---|
-| Access filter | **Hard security boundary.** Employees can only retrieve `audience: all` content; managers see everything. Applied inside the k-NN query on every path. | Fails **closed**: it either restricts or is absent, never partial. |
+| Access filter | **Hard security boundary.** Employees can only retrieve `audience: all` content; managers see everything in the corpus. Applied inside the k-NN query on every path. | Fails **closed**: it either restricts, is absent, or the request is rejected outright for an unsupported role — see [Access control](#access-control). |
 | Subject filter | **Soft relevance mechanism.** A planner maps the question onto a shared subject vocabulary; only chunks carrying one of those subjects are searched. | Fails **open**: an empty plan means no subject restriction. |
 | Vector search | **Recall.** Finds semantically close chunks. | — |
 | Reranker | **Precision and order.** Scores all candidates together against the question. | Candidates the model omits score 0. |
@@ -29,6 +29,16 @@ Each stage has one job:
 | LLM | **Answer synthesis** from the selected evidence only; it refuses when the context does not contain the answer. | — |
 
 An optional recency filter (chunks updated on or after a caller-supplied date) is available and is off unless a date is given.
+
+## Access control
+
+Access control is hard security filtering, not a relevance signal, and it is enforced separately from the subject and recency filters described above.
+
+- The currently supported audiences are `employee` and `manager`.
+- An `employee` query is restricted to chunks with `audience: all`.
+- A `manager` query has no audience restriction within the corpus.
+- Any other value — an unrecognized role, a typo, an empty string — **fails closed**: the request is rejected before an OpenSearch query is issued, rather than being treated as unrestricted or silently narrowed to "no results".
+- The audience filter is applied **inside** the k-NN query itself, never as a post-filter, so an unauthorized chunk is never ranked or returned even transiently.
 
 ## Evaluation
 

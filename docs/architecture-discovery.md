@@ -1,7 +1,8 @@
 # Architecture — NovaOps Intelligent RAG
 
 **Date:** 2026-09-20
-**Status:** Design phase. Only `config.py` (and its tests) is written; the RAG pipeline is not implemented. No write of any kind has been made to OpenSearch.
+**Status:** `config.py` and `retrieval.py` are implemented and unit-tested (offline, no network). `planner.py`, `reranker.py`, `create_index.py`, `ingest.py` and `eval.py` are not yet implemented. No write of any kind has been made to OpenSearch.
+**See also:** `docs/security-concepts.md` — the access-control model in detail (audience support, fail-closed rationale, enforcement point, extensibility).
 
 The project is a filtered and reranked RAG pipeline over the NovaOps knowledge base. It combines metadata filtering (an access boundary plus subject and recency filters) with listwise reranking, and includes an evaluation that measures the separate and combined effect of both. It builds on an existing, already-populated OpenSearch Serverless index and on earlier metadata-filtering and reranking prototypes whose behavior it inherits wherever a decision was already made.
 
@@ -100,7 +101,7 @@ Method: `GET` mapping/settings, `count`, `search` (`match_all` without vectors, 
 
 **`ingest.py` — ingest logic behind a populated-index guard.** Parse frontmatter → strip → tag via cached `load_or_tag()` (per article, zero model calls with the current cache) → chunk 250/50 → embed → bulk index. Before writing, it builds the expected records locally and compares with the live index; if the index is already populated (auto-generated ids mean an append would duplicate every chunk) it reports "already populated, N/N matches" and exits without writing. `audience` is **required** and must be `all` or `manager`: defaulting a missing audience to `all` would fail open on the one field that is a security boundary, so ingest raises instead.
 
-**`retrieval.py` — filters, k-NN, answer.** Pure filter builders (each returns a clause list, so an inactive filter drops out): `access_filter` (employee → `audience:"all"`; manager → none), `subject_terms` (`[]` → no clause), `recency_range` (`None` → no clause), `build_filter` → `{"bool":{"must":[...]}}` or `None`. `knn_search` puts the filter **inside** the `knn` block (pre-filter, never `post_filter`) and returns hits with `text, source, corpus, audience, subjects, last_updated`. `count_candidates` reports the pool size a filter admits. `answer()`: context ordered most-relevant-first and labelled as such, with a "use a later chunk if it holds a needed detail" clause; `temperature 0.2`, `maxTokens 1000` (400 truncated the multi-step manager answers in earlier runs).
+**`retrieval.py` — filters, k-NN, answer. Implemented.** Pure filter builders (each returns a clause list, so an inactive filter drops out): `access_filter` (employee → `audience:"all"`; manager → none; anything outside `SUPPORTED_AUDIENCES` → raises `UnsupportedAudienceError` before any clause is built — see §5 and `docs/security-concepts.md`), `subject_terms` (`[]` → no clause), `recency_range` (`None` → no clause), `build_filter` → `{"bool":{"must":[...]}}` or `None`. `knn_search` validates the audience (via `build_filter`) **before** embedding the query or calling the client, then puts the filter **inside** the `knn` block (pre-filter, never `post_filter`) and returns hits with `text, source, corpus, audience, subjects, last_updated`. `count_candidates` reports the pool size a filter admits, through the same validated `build_filter`. `answer()`: context ordered most-relevant-first and labelled as such, with a "use a later chunk if it holds a needed detail" clause; `temperature 0.2`, `maxTokens 1000` (400 truncated the multi-step manager answers in earlier runs). No `retrieve()` helper: callers that need only text extract `hit["_source"]["text"]` themselves, so metadata is never accidentally dropped before it reaches the reranker, the eval or the security checks.
 
 **`planner.py` — fail-open subject planner.** Forced `pick_subjects` tool over the imported `SUBJECTS`; recall-biased; `[]` for broad/unmappable; invalid labels dropped. Uses the shared `bedrock` client from `client.py`.
 
@@ -112,7 +113,15 @@ Method: `GET` mapping/settings, `count`, `search` (`match_all` without vectors, 
 
 ## 5. Hard Security Constraints vs. Quality Mechanisms
 
-**Fail closed (security):** the access filter — inside the k-NN query, in every path, tested with no model call. Also the ingest-time audience default (missing → error, not `all`).
+**Access = hard security. Subjects and recency = soft relevance.** The security rule is stronger than, and independent of, both quality filters: a soft filter can only narrow an already-authorized pool, never widen it, and nothing about subjects or recency can substitute for or weaken the audience check.
+
+**Supported audiences are `SUPPORTED_AUDIENCES = {"employee", "manager"}`, defined once in `retrieval.py`.** This set is the single source of truth for `access_filter` — it is not duplicated in `build_filter`, `knn_search` or `count_candidates`, all of which validate through it. **Fail closed (security):**
+- `employee` → restricted to `audience:"all"`.
+- `manager` → no audience restriction (unrestricted **within the existing corpus** — it does not grant any capability beyond what the corpus contains).
+- **Any audience outside that set is rejected.** The request raises `UnsupportedAudienceError` before the query is embedded or OpenSearch is contacted — not answered with a filter that happens to match zero documents, and never silently treated as `manager` or as unrestricted. An unsupported audience must never inherit the permissions of the broadest supported one. Full reasoning in `docs/security-concepts.md`.
+- The audience filter lives inside the k-NN query in every path, tested with no model call.
+- Also the ingest-time audience default (missing → error, not `all`).
+- Adding a future role means adding it to `SUPPORTED_AUDIENCES` **and** giving it an explicit branch in `access_filter`; widening the set alone is not sufficient and is not done speculatively — no role beyond `employee`/`manager` is defined today.
 
 **Fail open (quality):** subject filter (`[]` → search everything), recency (off), reranking (reorders only, never widens access).
 
@@ -147,6 +156,7 @@ Shared state between modules: only `subjects.SUBJECTS`.
 | Failure | Mitigation |
 |---|---|
 | Employee sees manager chunks | Access clause inside the k-NN filter in every path; deterministic polarity tests; live check; eval assertion |
+| Unsupported/unknown audience falls through to unrestricted access | `access_filter` validates against `SUPPORTED_AUDIENCES` and raises `UnsupportedAudienceError` before any filter is built or query sent; tested with no model call (`tests/test_retrieval.py`) |
 | Missing `audience` in a document silently becomes `all` | `ingest.py` raises unless `audience ∈ {all, manager}` |
 | Script destroys the shared index | `create_index.py`/`ingest.py` are non-destructive by default; `--recreate` needs flag + typed confirmation and refuses non-interactive runs |
 | Re-ingest duplicates chunks | Populated-index guard in `ingest.py` |
@@ -173,7 +183,7 @@ Required: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `BEDROCK_M
 ## 9. Tests
 
 **Deterministic (no model, no network)**
-1. `access_filter`: employee → `audience:"all"`; manager → no clause.
+1. `access_filter`: employee → `audience:"all"`; manager → no clause; any audience outside `SUPPORTED_AUDIENCES` (unknown role, empty string, wrong case) → raises, no clause returned. **Implemented and passing** in `tests/test_retrieval.py`.
 2. `build_filter("employee", [], None)` → access clause only; `("manager", [], None)` → `None`.
 3. `build_filter("employee", ["pay_and_benefits"], "2024-01-01")` → access + `terms` + `range` in one `bool.must`.
 4. Planner and tagger use the same `SUBJECTS` object.
