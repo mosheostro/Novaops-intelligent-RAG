@@ -11,14 +11,13 @@ import json
 import os
 from pathlib import Path
 
-import boto3
 from dotenv import find_dotenv, load_dotenv
+
+from client import bedrock
 
 load_dotenv(find_dotenv())
 
-REGION = os.environ.get("AWS_REGION", "us-east-1")
 MODEL_ID = os.environ["BEDROCK_MODEL_ID"]
-bedrock = boto3.client("bedrock-runtime", region_name=REGION)
 
 CACHE_FILE = Path(__file__).resolve().parent / "subjects.json"
 
