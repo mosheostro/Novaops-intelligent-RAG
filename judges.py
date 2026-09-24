@@ -22,12 +22,12 @@ Provided plumbing: the three LLM judges your eval imports to score answers.
 """
 import os
 
-import boto3
 from dotenv import find_dotenv, load_dotenv
+
+from client import bedrock
 
 load_dotenv(find_dotenv())
 MODEL_ID = os.environ["BEDROCK_MODEL_ID"]
-bedrock = boto3.client("bedrock-runtime", region_name=os.environ.get("AWS_REGION", "us-east-1"))
 
 # One shared scoring tool for all three judges. Forcing it (toolChoice) guarantees
 # a structured {score, reason} — no free-text parsing. What the 0.0-1.0 scale MEANS
