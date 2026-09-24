@@ -4,3 +4,5 @@ python-dotenv
 # ships AWSV4SignerAuth for SigV4 request signing — so no separate signing lib is
 # needed. The reranker and eval judges call Nova through boto3 (no extra deps).
 opensearch-py
+# The evaluation domain-model layer (models.py) — see docs/evaluation-domain-model.md.
+pydantic
