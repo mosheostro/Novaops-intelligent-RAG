@@ -1,51 +1,51 @@
 # HANDOFF — NovaOps Intelligent RAG
 
-## Архитектура
-Корпус (handbook + eng-wiki, markdown) → чанкинг 250/50 токенов → эмбеддинги Titan v2 →
-индекс `novaops-kb` в OpenSearch Serverless (k-NN). Запрос: planner (LLM выбирает subjects) →
-k-NN с pre-filter → listwise reranker → отбор чанков → ответ Nova через Bedrock Converse →
-оценка LLM-судьями. Детали: `docs/architecture-discovery.md`, `docs/evaluation-domain-model.md`.
+## Architecture
+Corpus (handbook + eng-wiki, markdown) → chunking 250/50 tokens → Titan v2 embeddings →
+`novaops-kb` index in OpenSearch Serverless (k-NN). Query flow: planner (LLM picks subjects) →
+k-NN with pre-filter → listwise reranker → chunk selection → Nova answer via Bedrock Converse →
+scoring by LLM judges. Details: `docs/architecture-discovery.md`, `docs/evaluation-domain-model.md`.
 
-## Модули
-- `config.py` — загрузка `.env`, все переменные обязательны (без дефолтов).
-- `client.py` — единственный владелец Bedrock runtime клиента (`bedrock`, `embed_text()`) и OpenSearch data-plane.
-- `subjects.py` / `subjects.json` — словарь subjects, тэггер, кэш тэгов по статьям.
-- `create_index.py` / `ingest.py` — неразрушающие: по умолчанию только проверка, запись только в пустой индекс.
-- `retrieval.py` — k-NN + фильтры: audience (жёсткая безопасность, fail-closed), subjects (мягкий, fail-open), recency (выкл).
-- `planner.py` — LLM-планировщик subjects (forced tool call).
-- `reranker.py` — listwise rerank один раз на пул (N=10).
-- `judges.py` — 4 LLM-судьи: faithfulness, context_relevance, completeness, refusal (boolean, forced tool).
-- `eval.py` — 5 конфигураций, общие вызовы между ними, флаг `report` для детального отчёта.
-- `models.py` — frozen Pydantic v2 модели результатов (ContentEvaluation | RefusalEvaluation по `kind`).
-- `logging_setup.py` — централизованный logging; `configure_logging()` вызывается только из `eval.py main()`.
-- `manage.py` — `status` / `down` (подтверждение вводом REMOVE); единственное исключение — control-plane клиент OpenSearch.
+## Modules
+- `config.py` — loads `.env`; all variables are required (no defaults).
+- `client.py` — sole owner of the Bedrock runtime client (`bedrock`, `embed_text()`) and the OpenSearch data plane.
+- `subjects.py` / `subjects.json` — subjects vocabulary, tagger, per-article tag cache.
+- `create_index.py` / `ingest.py` — non-destructive: check-only by default, writes only into an empty index.
+- `retrieval.py` — k-NN + filters: audience (hard security, fail-closed), subjects (soft, fail-open), recency (off).
+- `planner.py` — LLM subjects planner (forced tool call).
+- `reranker.py` — listwise rerank, once per pool (N=10).
+- `judges.py` — 4 LLM judges: faithfulness, context_relevance, completeness, refusal (boolean, forced tool).
+- `eval.py` — 5 configurations, shared calls between them, `report` flag for the detailed report.
+- `models.py` — frozen Pydantic v2 result models (ContentEvaluation | RefusalEvaluation, discriminated by `kind`).
+- `logging_setup.py` — centralized logging; `configure_logging()` is called only from `eval.py main()`.
+- `manage.py` — `status` / `down` (confirmation by typing REMOVE); the only exception is the OpenSearch control-plane client.
 
-## Принятые решения
-- Bedrock boundary: никакой другой модуль не создаёт `boto3.client("bedrock-runtime")`.
-- Structured output только через forced tool call, temperature 0.0 для судей.
-- Отбор: static top-3; dynamic — score ≥ 0.6 без fallback на top-1, иначе sentinel "not found".
-- Baseline TOP_K=4; тэгирование по статьям; recency выключен.
-- Отказ оценивается LLM-судьёй по всему ответу (вопрос + ответ), не по ключевым словам.
-  `expect_refusal` — ожидание из датасета, `refusal_ok` — наблюдаемое поведение.
-- Логи никогда не содержат промпты, ответы, текст чанков, key_facts, секреты.
-- Индекс `novaops-kb` не удалять/не пересоздавать/не переиндексировать без явной просьбы.
-- `.env` не коммитится; PAT из исходного README нигде не воспроизводится.
+## Decisions
+- Bedrock boundary: no other module creates `boto3.client("bedrock-runtime")`.
+- Structured output only via forced tool call; temperature 0.0 for judges.
+- Selection: static top-3; dynamic — score ≥ 0.6 with no fallback to top-1, otherwise the sentinel "not found".
+- Baseline TOP_K=4; tagging per article; recency off.
+- Refusal is scored by an LLM judge over the whole answer (question + answer), not by keywords.
+  `expect_refusal` is the dataset's expectation, `refusal_ok` is the observed behavior.
+- Logs never contain prompts, answers, chunk text, key_facts, or secrets.
+- Do not delete / recreate / reindex the `novaops-kb` index without an explicit request.
+- `.env` is not committed; the PAT from the original README is never reproduced anywhere.
 
-## Готово
-- Все модули выше реализованы; eval.py отрабатывает на живой коллекции (exit 0).
-- Refusal-судья: UNANSWERABLE_AWS → refusal_ok=True во всех 5 конфигах.
-- Тесты: 224 (unittest, всё замокано, без сети; логи тестов не пишутся в `logs/`).
-- Последний коммит: `b1a9343 refactor: replace refusal heuristic with LLM judge`.
+## Done
+- All modules above are implemented; eval.py runs against the live collection (exit 0).
+- Refusal judge: UNANSWERABLE_AWS → refusal_ok=True in all 5 configs.
+- Tests: 224 (unittest, everything mocked, no network; test logs are not written to `logs/`).
+- Last commit: `b1a9343 refactor: replace refusal heuristic with LLM judge`.
 
-## Известные проблемы
-- 3 падающих теста в `tests/test_logging_setup.py` (ожидают console=INFO, file=DEBUG),
-  а в `logging_setup.py` дефолты изменены на WARNING/WARNING. Нужно решить: вернуть
-  дефолты или обновить тесты. Из-за WARNING INFO-строки жизненного цикла не видны в консоли.
-- ACCESS_REVIEW (expect_refusal=true) → refusal_ok=False во всех конфигах: модель отвечает
-  по содержимому handbook. Проверить: датасет или audience-фильтр/контент.
-- Unit-тесты судей мокают модель — проверяют связку, не семантическую точность.
-- Refusal-судья = +1 вызов Bedrock на refusal-вопрос × конфиг (~10 вызовов за прогон).
-- `data/eval_questions_short.jsonl` застейджен (не закоммичен); в `eval.py` закомментирована
-  строка `QUESTIONS_FILE` на него — решить, оставлять ли.
-- Документы (`docs/architecture-discovery.md`, `docs/code-reuse-analysis.md`) могут ещё
-  описывать старую эвристику `refused()` — проверить.
+## Known issues
+- 3 failing tests in `tests/test_logging_setup.py` (they expect console=INFO, file=DEBUG),
+  while the defaults in `logging_setup.py` were changed to WARNING/WARNING. Need to decide:
+  restore the defaults or update the tests. With WARNING, INFO lifecycle lines are not visible in the console.
+- ACCESS_REVIEW (expect_refusal=true) → refusal_ok=False in all configs: the model answers
+  from the handbook content. To check: the dataset, or the audience filter / content.
+- Judge unit tests mock the model — they verify the wiring, not semantic accuracy.
+- The refusal judge costs +1 Bedrock call per refusal question × config (~10 calls per run).
+- `data/eval_questions_short.jsonl` is staged (not committed); a `QUESTIONS_FILE` line pointing to it
+  is commented out in `eval.py` — decide whether to keep it.
+- Docs (`docs/architecture-discovery.md`, `docs/code-reuse-analysis.md`) may still
+  describe the old `refused()` heuristic — check.
