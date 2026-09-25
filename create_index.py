@@ -20,7 +20,11 @@ side effect of being run again.
 
     python create_index.py
 """
+import logging
+
 from client import EMBED_DIM, INDEX_NAME, opensearch_client
+
+logger = logging.getLogger(__name__)
 
 INDEX_BODY = {
     "settings": {"index": {"knn": True}},
@@ -52,9 +56,11 @@ def ensure_index(client) -> None:
     if client.indices.exists(index=INDEX_NAME):
         count = client.count(index=INDEX_NAME)["count"]
         print(f"Index '{INDEX_NAME}' already exists ({count} docs indexed) — left unchanged.")
+        logger.info("index '%s' already exists (%d docs); left unchanged", INDEX_NAME, count)
         return
     client.indices.create(index=INDEX_NAME, body=INDEX_BODY)
     print(f"Created index '{INDEX_NAME}' (HNSW + audience + subjects + last_updated).")
+    logger.info("created index '%s'", INDEX_NAME)
 
 
 def main() -> None:

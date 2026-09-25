@@ -27,10 +27,13 @@ Even so recall-biasing is a trick, not a guarantee, which is why the eval
 MEASURES it (watch completeness — that's what catches a filter that dropped a
 needed fact).
 """
+import logging
 import os
 
 from client import bedrock
 from subjects import SUBJECTS
+
+logger = logging.getLogger(__name__)
 
 MODEL_ID = os.environ["BEDROCK_MODEL_ID"]
 
@@ -70,7 +73,10 @@ def plan_subjects(question: str) -> list[str]:
     for block in resp["output"]["message"]["content"]:
         if "toolUse" in block:
             picked = block["toolUse"]["input"].get("subjects", [])
-            return list(dict.fromkeys(s for s in picked if s in SUBJECTS))  # valid + deduped
+            planned = list(dict.fromkeys(s for s in picked if s in SUBJECTS))  # valid + deduped
+            logger.debug("planned subjects=%s", planned)
+            return planned
+    logger.debug("no toolUse block in the planner response; planned subjects=[] (fail open)")
     return []
 
 

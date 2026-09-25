@@ -53,10 +53,12 @@ the answer step further.
     python eval.py
 """
 import json
+import logging
 from pathlib import Path
 
 from client import opensearch_client
 from judges import completeness, context_relevance, faithfulness, refused
+from logging_setup import configure_logging
 from models import (
     CONFIG_NAMES,
     Candidate,
@@ -77,6 +79,8 @@ from models import (
 from planner import plan_subjects
 from reranker import rerank_all
 from retrieval import answer, knn_search
+
+logger = logging.getLogger(__name__)
 
 BASELINE_TOP_K = 4        # baseline / filter-only: plain vector context size
 CANDIDATE_POOL_SIZE = 10  # rerank configs: candidates retrieved BEFORE reranking
@@ -180,9 +184,15 @@ def select_context(
     confidence retrieval must read as "no evidence", never as apparently-valid
     evidence."""
     if mode == "static":
-        return list(ranked[:static_k])
+        selected = list(ranked[:static_k])
+        logger.debug("static selection: kept %d of %d", len(selected), len(ranked))
+        return selected
     if mode == "dynamic":
-        return [pair for pair in ranked if pair[1] >= min_score]
+        selected = [pair for pair in ranked if pair[1] >= min_score]
+        logger.debug(
+            "dynamic selection: kept %d of %d (threshold=%.2f)", len(selected), len(ranked), min_score,
+        )
+        return selected
     raise ValueError(f"unknown context-selection mode: {mode!r}")
 
 
@@ -230,6 +240,10 @@ def audit_security(candidates: list[Candidate], role: str) -> SecurityAudit:
     if role != "employee":
         return SecurityAudit(violation=False, violating_sources=[])
     bad_sources = [c.source for c in candidates if c.audience == "manager"]
+    if bad_sources:
+        logger.error(
+            "security violation: employee retrieval returned manager-only sources=%s", bad_sources,
+        )
     return SecurityAudit(violation=bool(bad_sources), violating_sources=bad_sources)
 
 
@@ -261,9 +275,21 @@ def run_config(
     leaf of evaluate()'s structured result."""
     answer_text = answer(q["question"], selection.context_texts)
     evaluation = score_answer(q, selection.context_texts, answer_text)
-    return ConfigurationResult(
+
+    if q["expect_refusal"] and isinstance(evaluation, RefusalEvaluation) and not evaluation.refusal_ok:
+        logger.warning(
+            "question=%s config=%s expected a refusal but the answer did not refuse", q["id"], name,
+        )
+    if not q["expect_refusal"] and selection.status == "not_found":
+        logger.warning(
+            "question=%s config=%s answerable question produced a not_found selection", q["id"], name,
+        )
+
+    result = ConfigurationResult(
         name=name, retrieval=retrieval, selection=selection, answer=answer_text, evaluation=evaluation,
     )
+    logger.info("question=%s config=%s completed n_chunks=%d", q["id"], name, result.n_chunks)
+    return result
 
 
 def build_retrieval_result(
@@ -284,6 +310,7 @@ def evaluate_question(client, q: dict) -> QuestionResult:
     once — shared — for the filter+rerank pool, whose single RetrievalResult is
     then reused, by reference, for both the static and dynamic configs)."""
     role, question = q["audience"], q["question"]
+    logger.info("question=%s started audience=%s", q["id"], role)
     planned_subjects = plan_subjects(question)  # ONE call, reused below
 
     configs: dict[ConfigName, ConfigurationResult] = {}
@@ -318,10 +345,12 @@ def evaluate_question(client, q: dict) -> QuestionResult:
         "filter + rerank dynamic", q, retrieval, build_selection_result(select_context(ranked, "dynamic")),
     )
 
-    return QuestionResult(
+    result = QuestionResult(
         id=q["id"], question=question, audience=role, expect_refusal=q["expect_refusal"],
         key_facts=q["key_facts"], planned_subjects=planned_subjects, configurations=configs,
     )
+    logger.info("question=%s completed", q["id"])
+    return result
 
 
 def mean(xs: list[float]) -> float | None:
@@ -370,6 +399,7 @@ def evaluate(client, questions: list[dict]) -> EvaluationResult:
     future UI renders directly from this; report() below is just one consumer
     of it (the CLI table). See models.py / docs/evaluation-domain-model.md for
     the full shape and its rationale."""
+    logger.info("evaluation started: %d questions x %d configs", len(questions), len(CONFIG_NAMES))
     per_question = {q["id"]: evaluate_question(client, q) for q in questions}
     metadata = EvaluationMetadata(
         question_count=len(questions),
@@ -379,7 +409,9 @@ def evaluate(client, questions: list[dict]) -> EvaluationResult:
         dynamic_threshold=MIN_RERANK_SCORE,
         baseline_top_k=BASELINE_TOP_K,
     )
-    return EvaluationResult(metadata=metadata, questions=per_question, summary=summarize(per_question))
+    result = EvaluationResult(metadata=metadata, questions=per_question, summary=summarize(per_question))
+    logger.info("evaluation completed")
+    return result
 
 
 def _fmt(x: float | None, spec: str = ".2f") -> str:
@@ -484,11 +516,17 @@ def report(results: EvaluationResult, questions: list[dict] | None = None) -> No
 
 
 def main() -> None:
+    configure_logging()  # the ONLY call site — stdout stays the human report, stderr+logs/eval.log get the rest
     client = opensearch_client()
     questions = load_questions()
     print(f"Evaluating {len(questions)} questions x {len(CONFIG_NAMES)} configs "
           "— this makes a lot of model calls (a few minutes).")
-    report(evaluate(client, questions), questions)
+    try:
+        results = evaluate(client, questions)
+        report(results, questions)
+    except Exception:
+        logger.exception("evaluation failed")
+        raise
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ utility never creates or recreates the collection, and never touches policies.
     python manage.py status   # exists? Active? how many chunks?
     python manage.py down     # deliberately destructive: delete the collection
 """
+import logging
 import os
 import sys
 import time
@@ -20,6 +21,8 @@ import time
 import boto3
 
 import config
+
+logger = logging.getLogger(__name__)
 
 REGION = config.AWS_REGION
 NAME = config.OPENSEARCH_COLLECTION
@@ -58,6 +61,7 @@ def status(aoss) -> None:
         return
     print(f"Collection '{NAME}': {collection['status']}")
     print(f"  endpoint: {collection.get('collectionEndpoint', '(pending)')}")
+    logger.info("collection '%s' status=%s", NAME, collection["status"])
     if collection["status"] != "ACTIVE":
         return
     try:
@@ -69,10 +73,12 @@ def status(aoss) -> None:
         if os_client.indices.exists(index=INDEX_NAME):
             count = os_client.count(index=INDEX_NAME)["count"]
             print(f"  index '{INDEX_NAME}': {count} chunks indexed")
+            logger.debug("index '%s' chunk count=%d", INDEX_NAME, count)
         else:
             print(f"  index '{INDEX_NAME}': not created yet — run create_index.py")
     except Exception as exc:
         print(f"  (couldn't reach the data plane yet: {exc})")
+        logger.warning("data plane not reachable yet for '%s': %s", NAME, exc)
 
 
 def down(aoss) -> None:
@@ -88,15 +94,19 @@ def down(aoss) -> None:
     answer = input(f"Type {CONFIRM_PHRASE} to confirm, or anything else to cancel: ")
     if answer != CONFIRM_PHRASE:
         print("Cancelled — collection left untouched.")
+        logger.info("delete cancelled for collection '%s'", NAME)
         return
+    logger.warning("delete confirmed for collection '%s' (id=%s); proceeding", NAME, collection["id"])
     aoss.delete_collection(id=collection["id"])
     print(f"Deleting collection '{NAME}' (id {collection['id']}).")
     for _ in range(30):
         if get_collection(aoss) is None:
             print("Done — collection deleted.")
+            logger.info("collection '%s' deleted", NAME)
             return
         time.sleep(5)
     print("Delete requested — still finalizing; it will disappear shortly.")
+    logger.info("collection '%s' delete requested, still finalizing", NAME)
 
 
 COMMANDS = {"status": status, "down": down}

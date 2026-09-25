@@ -16,9 +16,12 @@ caller (eval.py) cuts the ranked list: a fixed top_k, or a score threshold. That
 keeps "how good is this candidate" and "how many do we keep" as separate
 decisions.
 """
+import logging
 import os
 
 from client import bedrock
+
+logger = logging.getLogger(__name__)
 
 MODEL_ID = os.environ["BEDROCK_MODEL_ID"]
 
@@ -60,6 +63,7 @@ def rerank_all(query: str, candidates: list[dict]) -> list[tuple[dict, float]]:
     "index"), scores 0.0 rather than raising — one bad entry in a listwise
     response must not throw away the scores for every other candidate. The sort
     is stable, so tied scores keep their original candidate order."""
+    logger.debug("rerank_all: scoring %d candidates", len(candidates))
     listing = "\n\n".join(f"[{i}] {c['text']}" for i, c in enumerate(candidates))
     resp = bedrock.converse(
         modelId=MODEL_ID,
@@ -80,6 +84,18 @@ def rerank_all(query: str, candidates: list[dict]) -> list[tuple[dict, float]]:
                 scores[i] = max(0.0, min(1.0, float(entry.get("score", 0.0))))
             except (TypeError, ValueError):
                 continue  # malformed score for this one candidate — skip it, not the whole call
+    omitted = [i for i in range(len(candidates)) if i not in scores]
+    if omitted:
+        logger.warning(
+            "rerank_all: %d of %d candidates got no usable score from the model "
+            "(defaulted to 0.0)", len(omitted), len(candidates),
+        )
+    if scores:
+        values = list(scores.values())
+        logger.debug(
+            "rerank_all: scores min=%.2f max=%.2f mean=%.2f",
+            min(values), max(values), sum(values) / len(values),
+        )
     order = sorted(range(len(candidates)), key=lambda i: scores.get(i, 0.0), reverse=True)
     return [(candidates[i], scores.get(i, 0.0)) for i in order]
 

@@ -5,11 +5,14 @@ the scripts that build and query the index stay short. This is provided plumbing
 the OpenSearch + Bedrock wiring you build your filter+rerank pipeline on top of.
 """
 import json
+import logging
 import os
 
 import boto3
 from dotenv import find_dotenv, load_dotenv
 from opensearchpy import AWSV4SignerAuth, OpenSearch, RequestsHttpConnection
+
+logger = logging.getLogger(__name__)
 
 load_dotenv(find_dotenv())
 
@@ -43,9 +46,11 @@ def _aoss_session() -> boto3.Session:
     key = os.environ.get("OPENSEARCH_AWS_ACCESS_KEY_ID")
     secret = os.environ.get("OPENSEARCH_AWS_SECRET_ACCESS_KEY")
     if key and secret:
+        logger.debug("aoss session: using OPENSEARCH_AWS_* credentials (separate account)")
         return boto3.Session(
             aws_access_key_id=key, aws_secret_access_key=secret, region_name=REGION
         )
+    logger.debug("aoss session: using the default AWS_* credentials")
     return boto3.Session(region_name=REGION)
 
 
@@ -62,16 +67,19 @@ def resolve_endpoint() -> str:
         return override
     name = os.environ.get("OPENSEARCH_COLLECTION")
     if not name:
+        logger.error("OPENSEARCH_COLLECTION is not set")
         raise SystemExit("Set OPENSEARCH_COLLECTION in .env to your OpenSearch collection's name.")
     aoss = _aoss_session().client("opensearchserverless")
     details = aoss.batch_get_collection(names=[name]).get("collectionDetails", [])
     if not details:
+        logger.error("collection '%s' not found", name)
         raise SystemExit(
             f"Collection '{name}' not found — check the name and region, and that it's "
             "ACTIVE in the OpenSearch Serverless console."
         )
     endpoint = details[0].get("collectionEndpoint")
     if not endpoint:
+        logger.error("collection '%s' is not active (status=%s)", name, details[0].get("status"))
         raise SystemExit(f"Collection '{name}' is {details[0].get('status')} — wait for ACTIVE.")
     return endpoint
 

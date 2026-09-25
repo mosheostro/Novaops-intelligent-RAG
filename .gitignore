@@ -15,12 +15,16 @@ __pycache__/
 .mypy_cache/
 *.egg-info/
 
-# Editors, OS, logs
+# Editors, OS
 .idea/
 .vscode/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Runtime logs (logs/eval.log + its rotated eval.log.1, eval.log.2, ... -- the
+# directory is ignored outright since *.log alone would miss the rotated files)
+logs/
 *.log
 
 # Local tool settings

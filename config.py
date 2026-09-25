@@ -7,10 +7,13 @@ before anything else reads the environment. Region and model IDs have no default
 client.py, judges.py and subjects.py read the environment themselves and are not
 routed through this module; it is the contract for the application modules.
 """
+import logging
 import os
 from collections.abc import Mapping
 
 from dotenv import find_dotenv, load_dotenv
+
+logger = logging.getLogger(__name__)
 
 load_dotenv(find_dotenv())
 
@@ -41,6 +44,7 @@ def load_config(env: Mapping[str, str]) -> dict:
     returned: boto3 and client.py read them from the environment themselves."""
     missing = [name for name in REQUIRED if not _value(env, name)]
     if missing:
+        logger.error("missing required environment variables: %s", ", ".join(missing))
         raise ConfigError(
             "Missing required environment variables: " + ", ".join(missing)
             + ". Set them in .env (see .env.example) or the shell."
@@ -48,6 +52,7 @@ def load_config(env: Mapping[str, str]) -> dict:
     key_id, secret = (_value(env, name) for name in OPENSEARCH_CREDENTIAL_PAIR)
     if bool(key_id) != bool(secret):
         unset = OPENSEARCH_CREDENTIAL_PAIR[1] if key_id else OPENSEARCH_CREDENTIAL_PAIR[0]
+        logger.error("incomplete OpenSearch credential pair: %s is missing", unset)
         raise ConfigError(f"Set both OpenSearch credentials or neither: {unset} is missing.")
     return {
         "AWS_REGION": _value(env, "AWS_REGION"),

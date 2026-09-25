@@ -21,10 +21,13 @@ never sees a manager-only chunk even transiently in the ranking.
 eval layers and the security tests all need `audience`, `subjects` and
 `last_updated` off each hit, not only its text.
 """
+import logging
 import os
 from typing import TypedDict
 
 from client import INDEX_NAME, TOP_K, bedrock, embed_text
+
+logger = logging.getLogger(__name__)
 
 MODEL_ID = os.environ["BEDROCK_MODEL_ID"]
 
@@ -119,6 +122,10 @@ def knn_search(
     the query or touching `client` — an unsupported audience raises and no
     embedding call or OpenSearch request is made."""
     filt = build_filter(audience, subjects, updated_after)
+    logger.debug(
+        "knn_search audience=%s subjects=%s top_k=%s updated_after=%s filtered=%s",
+        audience, subjects, top_k, updated_after, filt is not None,
+    )
     knn: dict = {"vector": embed_text(query), "k": top_k}
     if filt:
         knn["filter"] = filt
@@ -127,7 +134,9 @@ def knn_search(
         "query": {"knn": {"vector": knn}},
         "_source": ["text", "source", "corpus", "audience", "subjects", "last_updated"],
     }
-    return client.search(index=INDEX_NAME, body=body)["hits"]["hits"]
+    hits = client.search(index=INDEX_NAME, body=body)["hits"]["hits"]
+    logger.debug("knn_search returned %d hits", len(hits))
+    return hits
 
 
 def count_candidates(

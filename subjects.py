@@ -8,12 +8,15 @@ intersection of {question's subjects} and {chunk's subjects} becomes an
 OpenSearch filter.
 """
 import json
+import logging
 import os
 from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
 
 from client import bedrock
+
+logger = logging.getLogger(__name__)
 
 load_dotenv(find_dotenv())
 
@@ -86,7 +89,9 @@ def load_or_tag(articles: dict[str, str]) -> dict[str, list[str]]:
         if key not in cache:
             cache[key] = tag_article(text)
             print(f"  tagged {key}: {', '.join(cache[key]) or '(none)'}")
+            logger.debug("tagged %s: subjects=%s", key, cache[key])
             changed = True
     if changed:
         CACHE_FILE.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+        logger.info("subjects cache updated: %d article(s), %s", len(cache), CACHE_FILE)
     return cache

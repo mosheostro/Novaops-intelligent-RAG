@@ -26,6 +26,7 @@ replacing anything — that is the existing, unchanged ingestion semantics.
     python create_index.py   # once, first (adds the metadata fields)
     python ingest.py
 """
+import logging
 import time
 from pathlib import Path
 
@@ -33,6 +34,8 @@ from opensearchpy import helpers
 
 from client import INDEX_NAME, embed_text, opensearch_client
 from subjects import load_or_tag
+
+logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
@@ -100,11 +103,13 @@ def ensure_index_ready_for_ingest(client) -> None:
     whether ingestion may run at all. It never deletes, recreates, or modifies
     the mapping; those stay someone else's responsibility."""
     if not client.indices.exists(index=INDEX_NAME):
+        logger.error("index '%s' does not exist", INDEX_NAME)
         raise SystemExit(
             f"Index '{INDEX_NAME}' does not exist. Run create_index.py first, then re-run ingest.py."
         )
     count = client.count(index=INDEX_NAME)["count"]
     if count > 0:
+        logger.error("index '%s' already has %d document(s); refusing to ingest", INDEX_NAME, count)
         raise SystemExit(
             f"Index '{INDEX_NAME}' already contains {count} document(s) — refusing to ingest "
             "to avoid indexing a duplicate copy of the corpus. This script has no upsert/"
@@ -157,10 +162,12 @@ def index_records(client, records: list[dict]) -> None:
     helpers.bulk(client, actions)
     wait_until_indexed(client, len(records))
     print(f"Indexed {len(records)} chunks (audience + subjects + last_updated) into '{INDEX_NAME}'.")
+    logger.info("indexed %d chunks into '%s'", len(records), INDEX_NAME)
 
 
 def main() -> None:
     # This main() IS the ingest pipeline — read it top to bottom, one stage per line.
+    logger.info("ingest started")
     client = opensearch_client()                                  # open the OpenSearch client
     ensure_index_ready_for_ingest(client)                         # refuse if missing or already populated
     documents = load_documents_with_metadata()                    # read each .md; split frontmatter (audience/corpus/date) from the body
