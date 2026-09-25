@@ -57,7 +57,7 @@ import logging
 from pathlib import Path
 
 from client import opensearch_client
-from judges import completeness, context_relevance, faithfulness, refused
+from judges import completeness, context_relevance, faithfulness, refusal
 from logging_setup import configure_logging
 from models import (
     CONFIG_NAMES,
@@ -90,7 +90,6 @@ MIN_RERANK_SCORE = 0.6    # dynamic cut: keep every candidate at or above this
 MAX_REPORT_ANSWER_CHARS = 600  # presentation only -- ConfigurationResult.answer is never shortened
 
 QUESTIONS_FILE = Path(__file__).resolve().parent / "data" / "eval_questions.jsonl"
-
 
 def load_questions() -> list[dict]:
     """Question records straight from the JSONL, one dict per line — including
@@ -250,13 +249,20 @@ def audit_security(candidates: list[Candidate], role: str) -> SecurityAudit:
 # --- judges: content metrics vs. the refusal check ------------------------------
 
 def score_answer(q: dict, contexts: list[str], answer_text: str) -> Evaluation:
-    """Refusal questions are scored ONLY by refused() — the content judges are
-    not run on them (there is no expected content to be faithful to, relevant
-    to, or complete against). Every other question gets all three judges. Judge
-    scores are preserved exactly as returned; each judge's one-sentence reason
-    is kept alongside it so a future UI has it without re-running anything."""
+    """Refusal questions are scored ONLY by the refusal judge — the content
+    judges are not run on them (there is no expected content to be faithful to,
+    relevant to, or complete against). Every other question gets all three
+    content judges. Judge scores are preserved exactly as returned; each
+    judge's one-sentence reason is kept alongside it so a future UI has it
+    without re-running anything.
+
+    `refusal_ok` is the OBSERVED behavior (did the answer actually refuse?),
+    judged by an LLM reading the question and the answer as a whole — never by
+    keyword matching. `q["expect_refusal"]` (used just above) stays the
+    dataset's EXPECTED behavior; the two are deliberately different things and
+    neither is renamed here."""
     if q["expect_refusal"]:
-        return RefusalEvaluation(refusal_ok=refused(answer_text))
+        return RefusalEvaluation(refusal_ok=refusal(q["question"], answer_text))
     f_score, f_reason = faithfulness(q["question"], contexts, answer_text)
     r_score, r_reason = context_relevance(q["question"], contexts)
     c_score, c_reason = completeness(q["question"], q["key_facts"], answer_text)

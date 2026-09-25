@@ -67,7 +67,7 @@ class EvaluationLifecycleLoggingTests(unittest.TestCase):
              patch("eval.faithfulness", return_value=(0.8, "ok")), \
              patch("eval.context_relevance", return_value=(0.7, "ok")), \
              patch("eval.completeness", return_value=(0.9, "ok")), \
-             patch("eval.refused", return_value=False), \
+             patch("eval.refusal", return_value=False), \
              self.assertLogs("eval", level="INFO") as cm:
             ev.evaluate(CLIENT, [q])
         joined = "\n".join(cm.output)
@@ -90,7 +90,7 @@ class RefusalWarningTests(unittest.TestCase):
              patch("eval.rerank_all", side_effect=lambda q_, cands: [(c, 0.5) for c in cands]), \
              patch("eval.answer", return_value="Here is the AWS bill: $42,000."), \
              patch("eval.faithfulness"), patch("eval.context_relevance"), patch("eval.completeness"), \
-             patch("eval.refused", return_value=False), \
+             patch("eval.refusal", return_value=False), \
              self.assertLogs("eval", level="WARNING") as cm:
             ev.evaluate_question(CLIENT, q)
         joined = "\n".join(cm.output)
@@ -113,7 +113,7 @@ class NotFoundWarningTests(unittest.TestCase):
              patch("eval.faithfulness", return_value=(0.1, "ok")), \
              patch("eval.context_relevance", return_value=(0.1, "ok")), \
              patch("eval.completeness", return_value=(0.0, "ok")), \
-             patch("eval.refused", return_value=False), \
+             patch("eval.refusal", return_value=False), \
              self.assertLogs("eval", level="WARNING") as cm:
             ev.evaluate_question(CLIENT, q)
         joined = "\n".join(cm.output)
@@ -135,7 +135,7 @@ class SecurityViolationLoggingTests(unittest.TestCase):
              patch("eval.faithfulness", return_value=(0.5, "ok")), \
              patch("eval.context_relevance", return_value=(0.5, "ok")), \
              patch("eval.completeness", return_value=(0.5, "ok")), \
-             patch("eval.refused", return_value=False), \
+             patch("eval.refusal", return_value=False), \
              self.assertLogs("eval", level="ERROR") as cm:
             ev.evaluate_question(CLIENT, q)
         joined = "\n".join(cm.output)

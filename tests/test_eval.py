@@ -297,14 +297,21 @@ class MeanTests(unittest.TestCase):
 
 
 class ScoreAnswerTests(unittest.TestCase):
-    @patch("eval.refused")
+    @patch("eval.refusal")
     @patch("eval.faithfulness")
-    def test_refusal_question_only_calls_refused(self, fake_faithfulness, fake_refused):
-        fake_refused.return_value = True
+    def test_refusal_question_only_calls_the_refusal_judge(self, fake_faithfulness, fake_refusal):
+        fake_refusal.return_value = True
         result = ev.score_answer(_q(expect_refusal=True), ["not found"], "I don't have that.")
         self.assertIsInstance(result, models.RefusalEvaluation)
         self.assertTrue(result.refusal_ok)
         fake_faithfulness.assert_not_called()
+
+    @patch("eval.refusal")
+    def test_refusal_question_passes_both_question_and_answer_to_the_judge(self, fake_refusal):
+        fake_refusal.return_value = False
+        q = _q(expect_refusal=True, question="what was the AWS bill?")
+        ev.score_answer(q, ["not found"], "I don't have that information.")
+        fake_refusal.assert_called_once_with("what was the AWS bill?", "I don't have that information.")
 
     @patch("eval.completeness")
     @patch("eval.context_relevance")
@@ -375,7 +382,7 @@ class EvaluateQuestionCallSharingTests(unittest.TestCase):
              patch("eval.faithfulness", return_value=(0.8, "ok")), \
              patch("eval.context_relevance", return_value=(0.7, "ok")), \
              patch("eval.completeness", return_value=(0.9, "ok")), \
-             patch("eval.refused", return_value=False):
+             patch("eval.refusal", return_value=False):
 
             def knn_side_effect(client, query, audience, subjects=None, top_k=4, updated_after=None):
                 if top_k == ev.BASELINE_TOP_K and subjects is None:
@@ -471,7 +478,7 @@ class EvaluateQuestionCallSharingTests(unittest.TestCase):
              patch("eval.faithfulness", return_value=(0.1, "ok")), \
              patch("eval.context_relevance", return_value=(0.1, "ok")), \
              patch("eval.completeness", return_value=(0.0, "ok")), \
-             patch("eval.refused", return_value=False):
+             patch("eval.refusal", return_value=False):
             spy_knn.side_effect = lambda client, query, audience, subjects=None, top_k=4, updated_after=None: (
                 BASELINE_HITS if top_k == ev.BASELINE_TOP_K and subjects is None else
                 FILTER_HITS if top_k == ev.BASELINE_TOP_K else
@@ -503,7 +510,7 @@ class EvaluateQuestionCallSharingTests(unittest.TestCase):
              patch("eval.answer", return_value="I don't have that information."), \
              patch("eval.faithfulness") as spy_faith, \
              patch("eval.context_relevance"), patch("eval.completeness"), \
-             patch("eval.refused", return_value=True):
+             patch("eval.refusal", return_value=True):
             spy_rerank.side_effect = lambda query, candidates: [(c, 0.5) for c in candidates]
             result = ev.evaluate_question(CLIENT, refusal_q)
         for name in models.CONFIG_NAMES:
@@ -522,7 +529,7 @@ class EvaluateQuestionCallSharingTests(unittest.TestCase):
              patch("eval.faithfulness", return_value=(0.5, "ok")), \
              patch("eval.context_relevance", return_value=(0.5, "ok")), \
              patch("eval.completeness", return_value=(0.5, "ok")), \
-             patch("eval.refused", return_value=False):
+             patch("eval.refusal", return_value=False):
             result = ev.evaluate_question(CLIENT, _q(audience="employee"))
         baseline = result.configurations["baseline"]
         self.assertTrue(baseline.retrieval.security.violation)
@@ -560,7 +567,7 @@ class EvaluateAndReportTests(unittest.TestCase):
              patch("eval.faithfulness", return_value=(0.8, "ok")), \
              patch("eval.context_relevance", return_value=(0.7, "ok")), \
              patch("eval.completeness", return_value=(0.9, "ok")), \
-             patch("eval.refused", side_effect=lambda a: "don't have" in a.lower()):
+             patch("eval.refusal", side_effect=lambda q, a: "don't have" in a.lower()):
             return ev.evaluate(CLIENT, questions), questions
 
     def test_evaluate_returns_an_evaluation_result_not_a_dict(self):
@@ -690,7 +697,7 @@ class SelectedReportSectionTests(unittest.TestCase):
              patch("eval.faithfulness", return_value=(0.8, "ok")), \
              patch("eval.context_relevance", return_value=(0.7, "ok")), \
              patch("eval.completeness", return_value=(0.9, "ok")), \
-             patch("eval.refused", side_effect=lambda a: "don't have" in a.lower()):
+             patch("eval.refusal", side_effect=lambda q, a: "don't have" in a.lower()):
             results = ev.evaluate(CLIENT, questions)
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -746,7 +753,7 @@ class SelectedReportSectionTests(unittest.TestCase):
              patch("eval.faithfulness", return_value=(0.1, "ok")), \
              patch("eval.context_relevance", return_value=(0.1, "ok")), \
              patch("eval.completeness", return_value=(0.0, "ok")), \
-             patch("eval.refused", return_value=False):
+             patch("eval.refusal", return_value=False):
             results = ev.evaluate(CLIENT, questions)
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -795,7 +802,7 @@ class SelectedReportSectionTests(unittest.TestCase):
              patch("eval.faithfulness", return_value=(0.8, "ok")), \
              patch("eval.context_relevance", return_value=(0.7, "ok")), \
              patch("eval.completeness", return_value=(0.9, "ok")), \
-             patch("eval.refused", return_value=False):
+             patch("eval.refusal", return_value=False):
             results = ev.evaluate(CLIENT, questions)
         # The domain object holds the COMPLETE, untruncated answer.
         self.assertEqual(results.questions["SHOWN"].configurations["baseline"].answer, long_answer)

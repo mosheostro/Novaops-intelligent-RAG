@@ -10,9 +10,13 @@ state, so a future API/UI process that imports e.g. `eval.evaluate()` directly
 (without running `eval.py` as a script) is never surprised by a reconfigured
 root logger.
 
-    Console (stderr, INFO)   — concise, operational; complements the CLI report.
-    Rotating file (DEBUG)    — logs/eval.log; detailed diagnostics; never
-                                committed (see .gitignore).
+    Console (stderr, WARNING+) — concise, operational; complements the CLI report.
+    Rotating file (WARNING+)    — logs/eval.log; warnings and errors only;
+                                   never committed (see .gitignore).
+
+Logging levels: DEBUG=10, INFO=20, WARNING=30, ERROR=40, CRITICAL=50, NOTSET=0.
+NOTSET inherits the parent level; use logger.disabled = True to disable a
+logger completely.
 """
 import logging
 from logging.handlers import RotatingFileHandler
@@ -30,10 +34,9 @@ NOISY_THIRD_PARTY_LOGGERS = ("boto3", "botocore", "urllib3", "opensearch")
 
 _FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
 
-
 def configure_logging(
-    console_level: int = logging.INFO,
-    file_level: int = logging.DEBUG,
+    console_level: int = logging.WARNING,
+    file_level: int = logging.WARNING,
     log_file: Path = DEFAULT_LOG_FILE,
 ) -> None:
     """Attach a stderr console handler (console_level) and a rotating file
