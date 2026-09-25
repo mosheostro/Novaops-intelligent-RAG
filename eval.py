@@ -83,10 +83,18 @@ CANDIDATE_POOL_SIZE = 10  # rerank configs: candidates retrieved BEFORE rerankin
 RERANK_STATIC_TOP_K = 3   # rerank configs: fixed-count cut after reranking
 MIN_RERANK_SCORE = 0.6    # dynamic cut: keep every candidate at or above this
 
+MAX_REPORT_ANSWER_CHARS = 600  # presentation only -- ConfigurationResult.answer is never shortened
+
 QUESTIONS_FILE = Path(__file__).resolve().parent / "data" / "eval_questions.jsonl"
 
 
 def load_questions() -> list[dict]:
+    """Question records straight from the JSONL, one dict per line — including
+    an optional "report" boolean (default false), which flags a question for
+    the detailed per-config report in report(). "report" is presentation
+    metadata only: it never reaches evaluate()/evaluate_question(), which read
+    only the fields they always have (id, question, audience, expect_refusal,
+    key_facts) and simply ignore any extra key a record happens to carry."""
     return [json.loads(line) for line in QUESTIONS_FILE.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
@@ -378,8 +386,79 @@ def _fmt(x: float | None, spec: str = ".2f") -> str:
     return "  n/a" if x is None else format(x, spec)
 
 
-def report(results: EvaluationResult) -> None:
-    """Presentation layer only — every number here also lives in `results`."""
+def truncate_answer(answer_text: str, max_chars: int = MAX_REPORT_ANSWER_CHARS) -> str:
+    """CLI presentation only — never applied to ConfigurationResult.answer
+    itself, which always holds the complete, untruncated text. A simple
+    character cut, not token-aware: this is a diagnostic preview, not a
+    length a model call has to respect."""
+    if len(answer_text) <= max_chars:
+        return answer_text
+    return answer_text[:max_chars] + "\n...\n[truncated]"
+
+
+def _selected_question_ids(questions: list[dict]) -> list[str]:
+    """Which question ids are flagged for the detailed report. The JSONL's
+    "report" field is the only source of truth — nothing here is hard-coded,
+    and a record with no "report" key at all defaults to not selected."""
+    return [q["id"] for q in questions if q.get("report", False)]
+
+
+def _print_configuration_detail(cfg: ConfigurationResult) -> None:
+    print("-" * 62)
+    print(cfg.name)
+    print("-" * 62)
+    print("Answer:")
+    print(truncate_answer(cfg.answer))
+    print(f"\nSelection status: {cfg.selection.status}")
+    print(f"Selected chunks: {cfg.n_chunks}")
+    if cfg.selection.chunks:
+        print("Sources:")
+        for sc in cfg.selection.chunks:
+            score_part = (f"  rerank_score={sc.candidate.rerank_score:.2f}"
+                          if sc.candidate.rerank_score is not None else "")
+            print(f"  [{sc.final_rank}] {sc.candidate.source}{score_part}")
+    print("Judge:")
+    if isinstance(cfg.evaluation, RefusalEvaluation):
+        print(f"  refusal_ok={cfg.evaluation.refusal_ok}")
+    else:
+        print(f"  faithfulness={cfg.evaluation.faithfulness:.2f}  "
+              f"context_relevance={cfg.evaluation.context_relevance:.2f}  "
+              f"completeness={cfg.evaluation.completeness:.2f}")
+    print()
+
+
+def _print_question_detail(q_result: QuestionResult) -> None:
+    print(f"\nQUESTION: {q_result.id}")
+    print(f"AUDIENCE: {q_result.audience}")
+    print(f"EXPECTED REFUSAL: {q_result.expect_refusal}")
+    print(f"Question text: {q_result.question}\n")
+    for name in CONFIG_NAMES:
+        cfg = q_result.configurations[name]
+        _print_configuration_detail(cfg)
+
+
+def _print_selected_report(results: EvaluationResult, questions: list[dict]) -> None:
+    """The SAME question, shown across all five configurations, for every
+    question flagged report=true in the input. This never re-runs evaluation —
+    it only reads the already-computed EvaluationResult."""
+    selected_ids = _selected_question_ids(questions)
+    if not selected_ids:
+        return
+    print("\n" + "=" * 78)
+    print("SELECTED EVALUATION REPORT")
+    print("=" * 78)
+    for qid in selected_ids:
+        _print_question_detail(results.questions[qid])
+
+
+def report(results: EvaluationResult, questions: list[dict] | None = None) -> None:
+    """Presentation layer only — every number here also lives in `results`.
+
+    The existing summary table is unchanged. When `questions` is given (the
+    same list passed to evaluate()), a second, detailed section follows,
+    showing every question flagged report=true across all five configs — for
+    comparing how one question's answer changes by configuration. Omitting
+    `questions` (or passing none flagged) reproduces the exact prior output."""
     meta = results.metadata
     print("\n" + "=" * 78)
     print("FILTER + RERANK MIX — measured effect (averages over the question set)")
@@ -400,13 +479,16 @@ def report(results: EvaluationResult) -> None:
     print("counts questions where an employee's retrieval returned a manager-only chunk — this")
     print("must read 0 for every config; a nonzero value is a retrieval bug, not a quality result.")
 
+    if questions:
+        _print_selected_report(results, questions)
+
 
 def main() -> None:
     client = opensearch_client()
     questions = load_questions()
     print(f"Evaluating {len(questions)} questions x {len(CONFIG_NAMES)} configs "
           "— this makes a lot of model calls (a few minutes).")
-    report(evaluate(client, questions))
+    report(evaluate(client, questions), questions)
 
 
 if __name__ == "__main__":

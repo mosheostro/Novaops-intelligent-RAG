@@ -36,9 +36,10 @@ def _hit(text, score, audience="all", subjects=None, source="doc.md",
 
 
 def _q(id="Q1", question="how much severance do I get?", audience="employee",
-       expect_refusal=False, key_facts=None):
+       expect_refusal=False, key_facts=None, report=False):
     return {"id": id, "question": question, "audience": audience,
-            "expect_refusal": expect_refusal, "key_facts": key_facts or ["fact one"]}
+            "expect_refusal": expect_refusal, "key_facts": key_facts or ["fact one"],
+            "report": report}
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +336,19 @@ class LoadQuestionsTests(unittest.TestCase):
     def test_default_path_is_the_project_level_data_file(self):
         self.assertEqual(ev.QUESTIONS_FILE, Path(ev.__file__).resolve().parent / "data" / "eval_questions.jsonl")
 
+    def test_report_flag_is_preserved_through_loading(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "eval_questions.jsonl"
+            path.write_text(
+                json.dumps(_q(id="A", report=True)) + "\n" + json.dumps(_q(id="B", report=False)) + "\n",
+                encoding="utf-8",
+            )
+            with patch.object(ev, "QUESTIONS_FILE", path):
+                questions = ev.load_questions()
+        by_id = {q["id"]: q for q in questions}
+        self.assertIs(by_id["A"]["report"], True)
+        self.assertIs(by_id["B"]["report"], False)
+
 
 # ---------------------------------------------------------------------------
 # evaluate_question() — call-sharing rules, retrieval strategy, structure.
@@ -524,9 +538,11 @@ class EvaluateQuestionCallSharingTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class EvaluateAndReportTests(unittest.TestCase):
-    def _evaluate_two_questions(self):
-        normal_q = _q(id="NORMAL", expect_refusal=False)
-        refusal_q = _q(id="REFUSAL", expect_refusal=True, question="what was the AWS bill?")
+    def _evaluate_two_questions(self, questions=None):
+        questions = questions or [
+            _q(id="NORMAL", expect_refusal=False),
+            _q(id="REFUSAL", expect_refusal=True, question="what was the AWS bill?"),
+        ]
 
         def fake_knn(client, query, audience, subjects=None, top_k=4, updated_after=None):
             if top_k == ev.BASELINE_TOP_K:
@@ -545,28 +561,28 @@ class EvaluateAndReportTests(unittest.TestCase):
              patch("eval.context_relevance", return_value=(0.7, "ok")), \
              patch("eval.completeness", return_value=(0.9, "ok")), \
              patch("eval.refused", side_effect=lambda a: "don't have" in a.lower()):
-            return ev.evaluate(CLIENT, [normal_q, refusal_q])
+            return ev.evaluate(CLIENT, questions), questions
 
     def test_evaluate_returns_an_evaluation_result_not_a_dict(self):
-        results = self._evaluate_two_questions()
+        results, _questions = self._evaluate_two_questions()
         self.assertIsInstance(results, models.EvaluationResult)
         self.assertEqual(set(results.questions), {"NORMAL", "REFUSAL"})
         self.assertEqual(results.metadata.question_count, 2)
         self.assertEqual(results.metadata.candidate_pool_size, ev.CANDIDATE_POOL_SIZE)
 
     def test_summary_averages_only_the_normal_question_for_content_judges(self):
-        results = self._evaluate_two_questions()
+        results, _questions = self._evaluate_two_questions()
         summary = results.summary["baseline"]
         self.assertEqual(summary.faithfulness_avg, 0.8)  # only NORMAL contributes
         self.assertEqual(summary.refusal_ok_avg, 1.0)    # only REFUSAL contributes, and it passed
 
     def test_summary_n_chunks_avg_uses_the_corrected_not_found_semantics(self):
-        results = self._evaluate_two_questions()
+        results, _questions = self._evaluate_two_questions()
         # FR_SCORES has exactly 4 values >= 0.6 for both questions -> dynamic n_chunks == 4 each.
         self.assertEqual(results.summary["filter + rerank dynamic"].n_chunks_avg, 4.0)
 
     def test_report_runs_against_the_structured_result_without_crashing(self):
-        results = self._evaluate_two_questions()
+        results, _questions = self._evaluate_two_questions()
         import io
         from contextlib import redirect_stdout
         buf = io.StringIO()
@@ -576,8 +592,17 @@ class EvaluateAndReportTests(unittest.TestCase):
         for name in models.CONFIG_NAMES:
             self.assertIn(name, output)
 
+    def test_report_with_no_questions_arg_prints_no_detailed_section(self):
+        results, _questions = self._evaluate_two_questions()
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            ev.report(results)  # backward-compatible call, unchanged behavior
+        self.assertNotIn("SELECTED EVALUATION REPORT", buf.getvalue())
+
     def test_report_does_not_mutate_or_require_reevaluation(self):
-        results = self._evaluate_two_questions()
+        results, _questions = self._evaluate_two_questions()
         import io
         from contextlib import redirect_stdout
         with redirect_stdout(io.StringIO()):
@@ -588,11 +613,198 @@ class EvaluateAndReportTests(unittest.TestCase):
     def test_result_serializes_at_the_boundary_via_pydantic(self):
         # JSON only appears at an external boundary, produced directly from the
         # domain object -- never a hand-built dict staged in between.
-        results = self._evaluate_two_questions()
+        results, _questions = self._evaluate_two_questions()
         payload = results.model_dump_json()
         self.assertIsInstance(payload, str)
         restored = models.EvaluationResult.model_validate_json(payload)
         self.assertEqual(restored.metadata.question_count, results.metadata.question_count)
+
+
+# ---------------------------------------------------------------------------
+# The "report" flag and the detailed per-question report section.
+#
+# The flag lives ONLY on the raw input question dicts (from
+# data/eval_questions.jsonl) -- it is never added to QuestionResult or any
+# other domain model. report() takes the original `questions` list as an
+# optional second argument purely to know which already-computed
+# QuestionResults to print in detail; evaluation itself is entirely
+# unaffected (evaluate() is called identically either way).
+# ---------------------------------------------------------------------------
+
+class TruncateAnswerTests(unittest.TestCase):
+    def test_short_answer_is_unchanged(self):
+        short = "a short answer"
+        self.assertEqual(ev.truncate_answer(short, max_chars=ev.MAX_REPORT_ANSWER_CHARS), short)
+
+    def test_answer_exactly_at_the_limit_is_unchanged(self):
+        exact = "x" * ev.MAX_REPORT_ANSWER_CHARS
+        self.assertEqual(ev.truncate_answer(exact, max_chars=ev.MAX_REPORT_ANSWER_CHARS), exact)
+
+    def test_long_answer_is_truncated_predictably(self):
+        long_answer = "y" * (ev.MAX_REPORT_ANSWER_CHARS + 50)
+        result = ev.truncate_answer(long_answer, max_chars=ev.MAX_REPORT_ANSWER_CHARS)
+        self.assertTrue(result.startswith("y" * ev.MAX_REPORT_ANSWER_CHARS))
+        self.assertIn("[truncated]", result)
+        self.assertLess(len(result), len(long_answer) + 30)
+
+    def test_uses_the_module_default_when_max_chars_omitted(self):
+        long_answer = "z" * (ev.MAX_REPORT_ANSWER_CHARS + 10)
+        self.assertIn("[truncated]", ev.truncate_answer(long_answer))
+
+
+class SelectedQuestionIdsTests(unittest.TestCase):
+    def test_only_report_true_questions_are_selected(self):
+        questions = [_q(id="A", report=True), _q(id="B", report=False), _q(id="C", report=True)]
+        self.assertEqual(ev._selected_question_ids(questions), ["A", "C"])
+
+    def test_missing_report_key_defaults_to_not_selected(self):
+        questions = [{"id": "NO_FLAG", "question": "q", "audience": "employee",
+                      "expect_refusal": False, "key_facts": []}]
+        self.assertEqual(ev._selected_question_ids(questions), [])
+
+    def test_no_selected_questions_is_an_empty_list_not_an_error(self):
+        questions = [_q(id="A", report=False)]
+        self.assertEqual(ev._selected_question_ids(questions), [])
+
+
+class SelectedReportSectionTests(unittest.TestCase):
+    """report(results, questions) — the human-readable detailed section."""
+
+    def _run(self, questions):
+        import io
+        from contextlib import redirect_stdout
+
+        def fake_knn(client, query, audience, subjects=None, top_k=4, updated_after=None):
+            if top_k == ev.BASELINE_TOP_K:
+                return BASELINE_HITS if subjects is None else FILTER_HITS
+            return RERANK_ONLY_POOL if subjects is None else FR_POOL
+
+        def fake_rerank(query, candidates):
+            scores = RO_SCORES if candidates[0]["text"].startswith("ro-") else FR_SCORES
+            return sorted(zip(candidates, scores), key=lambda p: p[1], reverse=True)
+
+        with patch("eval.plan_subjects", return_value=[]), \
+             patch("eval.knn_search", side_effect=fake_knn), \
+             patch("eval.rerank_all", side_effect=fake_rerank), \
+             patch("eval.answer", side_effect=lambda q, c: "I don't have that." if "AWS" in q else "the answer"), \
+             patch("eval.faithfulness", return_value=(0.8, "ok")), \
+             patch("eval.context_relevance", return_value=(0.7, "ok")), \
+             patch("eval.completeness", return_value=(0.9, "ok")), \
+             patch("eval.refused", side_effect=lambda a: "don't have" in a.lower()):
+            results = ev.evaluate(CLIENT, questions)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            ev.report(results, questions)
+        return results, buf.getvalue()
+
+    def test_report_false_questions_do_not_appear_in_detailed_section(self):
+        questions = [_q(id="SHOWN", report=True), _q(id="HIDDEN", report=False, question="other question")]
+        _results, output = self._run(questions)
+        section = output.split("SELECTED EVALUATION REPORT", 1)[1]
+        self.assertIn("SHOWN", section)
+        self.assertNotIn("HIDDEN", section)
+
+    def test_report_true_questions_appear(self):
+        questions = [_q(id="SHOWN", report=True)]
+        _results, output = self._run(questions)
+        self.assertIn("SELECTED EVALUATION REPORT", output)
+        self.assertIn("SHOWN", output)
+
+    def test_selected_question_appears_exactly_once_under_all_five_configs(self):
+        questions = [_q(id="SHOWN", report=True)]
+        _results, output = self._run(questions)
+        section = output.split("SELECTED EVALUATION REPORT", 1)[1]
+        self.assertEqual(section.count("QUESTION: SHOWN"), 1)  # not once per config
+        for name in models.CONFIG_NAMES:
+            self.assertIn(name, section)
+
+    def test_no_selected_questions_omits_the_section_entirely(self):
+        questions = [_q(id="A", report=False), _q(id="B", report=False)]
+        _results, output = self._run(questions)
+        self.assertNotIn("SELECTED EVALUATION REPORT", output)
+
+    def test_not_found_selection_is_displayed_correctly(self):
+        # All FR_SCORES below 0.6 -> the dynamic config for this question is not_found.
+        low_fr_scores = [0.1] * 10
+        questions = [_q(id="SHOWN", report=True)]
+
+        def fake_knn(client, query, audience, subjects=None, top_k=4, updated_after=None):
+            if top_k == ev.BASELINE_TOP_K:
+                return BASELINE_HITS if subjects is None else FILTER_HITS
+            return RERANK_ONLY_POOL if subjects is None else FR_POOL
+
+        def fake_rerank(query, candidates):
+            scores = RO_SCORES if candidates[0]["text"].startswith("ro-") else low_fr_scores
+            return sorted(zip(candidates, scores), key=lambda p: p[1], reverse=True)
+
+        import io
+        from contextlib import redirect_stdout
+        with patch("eval.plan_subjects", return_value=[]), \
+             patch("eval.knn_search", side_effect=fake_knn), \
+             patch("eval.rerank_all", side_effect=fake_rerank), \
+             patch("eval.answer", return_value="not found in context"), \
+             patch("eval.faithfulness", return_value=(0.1, "ok")), \
+             patch("eval.context_relevance", return_value=(0.1, "ok")), \
+             patch("eval.completeness", return_value=(0.0, "ok")), \
+             patch("eval.refused", return_value=False):
+            results = ev.evaluate(CLIENT, questions)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            ev.report(results, questions)
+        output = buf.getvalue()
+        self.assertIn("not_found", output)
+        self.assertIn("Selected chunks: 0", output)
+
+    def test_refusal_question_displays_expected_refusal_information(self):
+        questions = [_q(id="REFUSAL_Q", report=True, expect_refusal=True, question="what was the AWS bill?")]
+        _results, output = self._run(questions)
+        section = output.split("SELECTED EVALUATION REPORT", 1)[1]
+        self.assertIn("REFUSAL_Q", section)
+        self.assertIn("EXPECTED REFUSAL: True", section)
+
+    def test_expect_refusal_true_but_chunks_selected_is_exposed_not_hidden(self):
+        # baseline/filter-only always select something (no cut) -- for a
+        # refusal question that means "expect_refusal=true" alongside
+        # "Selected chunks: 4" for those two configs. The report must show
+        # this plainly, not suppress or hide it.
+        questions = [_q(id="REFUSAL_Q", report=True, expect_refusal=True, question="what was the AWS bill?")]
+        _results, output = self._run(questions)
+        section = output.split("SELECTED EVALUATION REPORT", 1)[1]
+        baseline_block = section[section.index("\nbaseline\n"):section.index("\nfilter-only\n")]
+        self.assertIn("Selected chunks: 4", baseline_block)
+
+    def test_answer_truncation_in_report_does_not_modify_the_domain_answer(self):
+        long_answer = "a" * (ev.MAX_REPORT_ANSWER_CHARS + 100)
+        questions = [_q(id="SHOWN", report=True)]
+
+        def fake_knn(client, query, audience, subjects=None, top_k=4, updated_after=None):
+            if top_k == ev.BASELINE_TOP_K:
+                return BASELINE_HITS if subjects is None else FILTER_HITS
+            return RERANK_ONLY_POOL if subjects is None else FR_POOL
+
+        def fake_rerank(query, candidates):
+            scores = RO_SCORES if candidates[0]["text"].startswith("ro-") else FR_SCORES
+            return sorted(zip(candidates, scores), key=lambda p: p[1], reverse=True)
+
+        import io
+        from contextlib import redirect_stdout
+        with patch("eval.plan_subjects", return_value=[]), \
+             patch("eval.knn_search", side_effect=fake_knn), \
+             patch("eval.rerank_all", side_effect=fake_rerank), \
+             patch("eval.answer", return_value=long_answer), \
+             patch("eval.faithfulness", return_value=(0.8, "ok")), \
+             patch("eval.context_relevance", return_value=(0.7, "ok")), \
+             patch("eval.completeness", return_value=(0.9, "ok")), \
+             patch("eval.refused", return_value=False):
+            results = ev.evaluate(CLIENT, questions)
+        # The domain object holds the COMPLETE, untruncated answer.
+        self.assertEqual(results.questions["SHOWN"].configurations["baseline"].answer, long_answer)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            ev.report(results, questions)
+        # The printed report is bounded.
+        self.assertNotIn(long_answer, buf.getvalue())
+        self.assertIn("[truncated]", buf.getvalue())
 
 
 if __name__ == "__main__":
