@@ -52,8 +52,12 @@ the answer step further.
 
     python eval.py
 """
+import argparse
 import json
 import logging
+import sys
+from collections.abc import Sequence
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from client import opensearch_client
@@ -90,15 +94,44 @@ MIN_RERANK_SCORE = 0.6    # dynamic cut: keep every candidate at or above this
 MAX_REPORT_ANSWER_CHARS = 600  # presentation only -- ConfigurationResult.answer is never shortened
 
 QUESTIONS_FILE = Path(__file__).resolve().parent / "data" / "eval_questions.jsonl"
+RUNS_DIR = Path(__file__).resolve().parent / "runs"  # saved EvaluationResult JSON, browsed by the UI
 
-def load_questions() -> list[dict]:
+def load_questions(path: Path | None = None) -> list[dict]:
     """Question records straight from the JSONL, one dict per line — including
     an optional "report" boolean (default false), which flags a question for
     the detailed per-config report in report(). "report" is presentation
     metadata only: it never reaches evaluate()/evaluate_question(), which read
     only the fields they always have (id, question, audience, expect_refusal,
     key_facts) and simply ignore any extra key a record happens to carry."""
-    return [json.loads(line) for line in QUESTIONS_FILE.read_text(encoding="utf-8").splitlines() if line.strip()]
+    text = (path or QUESTIONS_FILE).read_text(encoding="utf-8")
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def select_questions(questions: list[dict], ids: Sequence[str] | None) -> list[dict]:
+    """The subset of a question set with the given ids, in the set's own order.
+    None selects everything; an empty selection or an unknown id is an error —
+    a typo must never silently shrink an experiment."""
+    if ids is None:
+        return list(questions)
+    unknown = sorted(set(ids) - {q["id"] for q in questions})
+    if unknown or not ids:
+        raise ValueError(f"unknown or empty question selection: {unknown or list(ids)}")
+    return [q for q in questions if q["id"] in set(ids)]
+
+
+def estimate_calls(questions: list[dict], configs: Sequence[str]) -> int:
+    """Approximate model calls (Bedrock chat + embedding) for an experiment,
+    mirroring evaluate_question()'s sharing rules: planner at most once per
+    question, one query embedding per distinct retrieval pool, one rerank per
+    reranked pool (static + dynamic share one), one answer per config, then 3
+    content judges per config — or 1 refusal judge for expect_refusal cases."""
+    selected = set(resolve_configs(configs))
+    planner = 1 if selected & PLANNED_CONFIGS else 0
+    shared = 1 if selected & set(SHARED_RERANK_CONFIGS) else 0
+    pools = len(selected & {"baseline", "filter-only", "rerank-only"}) + shared
+    reranks = (1 if "rerank-only" in selected else 0) + shared
+    per_question = planner + pools + reranks + len(selected)
+    return sum(per_question + len(selected) * (1 if q["expect_refusal"] else 3) for q in questions)
 
 
 # --- candidates: OpenSearch hits -> domain objects -------------------------------
@@ -300,60 +333,88 @@ def run_config(
 
 def build_retrieval_result(
     role: str, subjects_applied: list[str] | None, top_k_requested: int, pool: list[Candidate],
+    cutoff: date | None = None,
 ) -> RetrievalResult:
     """Assemble the retrieval side of one configuration: the filters that were
     actually applied, the raw pool, and a security audit over that WHOLE pool."""
     security = audit_security(pool, role)
     return RetrievalResult(
         audience=role, subjects_applied=subjects_applied, top_k_requested=top_k_requested,
-        candidates=pool, security=security,
+        candidates=pool, security=security, cutoff=cutoff,
     )
 
 
-def evaluate_question(client, q: dict) -> QuestionResult:
-    """Run one question through all five configs. plan_subjects runs exactly
-    once here; the reranker runs exactly twice (once for the rerank-only pool,
-    once — shared — for the filter+rerank pool, whose single RetrievalResult is
-    then reused, by reference, for both the static and dynamic configs)."""
-    role, question = q["audience"], q["question"]
-    logger.info("question=%s started audience=%s", q["id"], role)
-    planned_subjects = plan_subjects(question)  # ONE call, reused below
+PLANNED_CONFIGS = frozenset({"filter-only", "filter + rerank static", "filter + rerank dynamic"})
+SHARED_RERANK_CONFIGS = ("filter + rerank static", "filter + rerank dynamic")
 
-    configs: dict[ConfigName, ConfigurationResult] = {}
+
+def resolve_configs(configs: Sequence[str]) -> list[ConfigName]:
+    """Validate a configuration selection and return it in canonical order."""
+    unknown = sorted(set(configs) - set(CONFIG_NAMES))
+    if unknown or not configs:
+        raise ValueError(f"select one or more of {list(CONFIG_NAMES)}; got {list(configs)}")
+    return [name for name in CONFIG_NAMES if name in configs]
+
+
+def evaluate_question(
+    client, q: dict, configs: Sequence[str] = CONFIG_NAMES, cutoff: date | None = None,
+) -> QuestionResult:
+    """Run one question through the selected configs (all five by default).
+    Shared work stays shared: plan_subjects runs at most once (only if a
+    selected config uses the subject filter); the rerank-only pool is reranked
+    once; the filter+rerank pool is retrieved and reranked once and its single
+    RetrievalResult is reused, by reference, for whichever of the static and
+    dynamic cuts are selected. `cutoff` (last_updated >= cutoff) applies to
+    every retrieval; the access filter always comes from q["audience"]."""
+    selected = resolve_configs(configs)
+    role, question = q["audience"], q["question"]
+    updated_after = cutoff.isoformat() if cutoff else None
+    logger.info("question=%s started audience=%s configs=%d", q["id"], role, len(selected))
+    planned_subjects = plan_subjects(question) if PLANNED_CONFIGS & set(selected) else None  # ONE call, reused
+
+    def retrieve(subjects: list[str] | None, top_k: int) -> list[Candidate]:
+        return hits_to_candidates(
+            knn_search(client, question, role, subjects=subjects, top_k=top_k, updated_after=updated_after)
+        )
+
+    configs_run: dict[ConfigName, ConfigurationResult] = {}
 
     # 1. baseline — no subject filter, vector top-4, no rerank.
-    pool = hits_to_candidates(knn_search(client, question, role, subjects=None, top_k=BASELINE_TOP_K))
-    retrieval = build_retrieval_result(role, None, BASELINE_TOP_K, pool)
-    configs["baseline"] = run_config("baseline", q, retrieval, _select_all(pool))
+    if "baseline" in selected:
+        pool = retrieve(None, BASELINE_TOP_K)
+        retrieval = build_retrieval_result(role, None, BASELINE_TOP_K, pool, cutoff=cutoff)
+        configs_run["baseline"] = run_config("baseline", q, retrieval, _select_all(pool))
 
     # 2. filter-only — subject filter (reused plan), vector top-4, no rerank.
-    pool = hits_to_candidates(knn_search(client, question, role, subjects=planned_subjects, top_k=BASELINE_TOP_K))
-    retrieval = build_retrieval_result(role, planned_subjects, BASELINE_TOP_K, pool)
-    configs["filter-only"] = run_config("filter-only", q, retrieval, _select_all(pool))
+    if "filter-only" in selected:
+        pool = retrieve(planned_subjects, BASELINE_TOP_K)
+        retrieval = build_retrieval_result(role, planned_subjects, BASELINE_TOP_K, pool, cutoff=cutoff)
+        configs_run["filter-only"] = run_config("filter-only", q, retrieval, _select_all(pool))
 
     # 3. rerank-only — its OWN pool (no subject filter), N=10, rerank ONCE, static cut.
-    pool = hits_to_candidates(knn_search(client, question, role, subjects=None, top_k=CANDIDATE_POOL_SIZE))
-    pool, ranked = attach_rerank_scores(pool, rerank_candidates(question, pool))  # ONE rerank call
-    retrieval = build_retrieval_result(role, None, CANDIDATE_POOL_SIZE, pool)
-    configs["rerank-only"] = run_config(
-        "rerank-only", q, retrieval, build_selection_result(select_context(ranked, "static")),
-    )
+    if "rerank-only" in selected:
+        pool = retrieve(None, CANDIDATE_POOL_SIZE)
+        pool, ranked = attach_rerank_scores(pool, rerank_candidates(question, pool))  # ONE rerank call
+        retrieval = build_retrieval_result(role, None, CANDIDATE_POOL_SIZE, pool, cutoff=cutoff)
+        configs_run["rerank-only"] = run_config(
+            "rerank-only", q, retrieval, build_selection_result(select_context(ranked, "static")),
+        )
 
     # 4 & 5. filter + rerank — ONE shared pool + ONE rerank call, cut two ways.
-    pool = hits_to_candidates(knn_search(client, question, role, subjects=planned_subjects, top_k=CANDIDATE_POOL_SIZE))
-    pool, ranked = attach_rerank_scores(pool, rerank_candidates(question, pool))  # ONE call, shared
-    retrieval = build_retrieval_result(role, planned_subjects, CANDIDATE_POOL_SIZE, pool)  # shared by reference below
-
-    configs["filter + rerank static"] = run_config(
-        "filter + rerank static", q, retrieval, build_selection_result(select_context(ranked, "static")),
-    )
-    configs["filter + rerank dynamic"] = run_config(
-        "filter + rerank dynamic", q, retrieval, build_selection_result(select_context(ranked, "dynamic")),
-    )
+    shared = [name for name in SHARED_RERANK_CONFIGS if name in selected]
+    if shared:
+        pool = retrieve(planned_subjects, CANDIDATE_POOL_SIZE)
+        pool, ranked = attach_rerank_scores(pool, rerank_candidates(question, pool))  # ONE call, shared
+        retrieval = build_retrieval_result(role, planned_subjects, CANDIDATE_POOL_SIZE, pool, cutoff=cutoff)
+        for name in shared:  # same `retrieval` object, by reference
+            mode = "static" if name == "filter + rerank static" else "dynamic"
+            configs_run[name] = run_config(
+                name, q, retrieval, build_selection_result(select_context(ranked, mode)),
+            )
 
     result = QuestionResult(
         id=q["id"], question=question, audience=role, expect_refusal=q["expect_refusal"],
-        key_facts=q["key_facts"], planned_subjects=planned_subjects, configurations=configs,
+        key_facts=q["key_facts"], planned_subjects=planned_subjects, configurations=configs_run,
     )
     logger.info("question=%s completed", q["id"])
     return result
@@ -366,7 +427,9 @@ def mean(xs: list[float]) -> float | None:
     return sum(xs) / len(xs) if xs else None
 
 
-def summarize(per_question: dict[str, QuestionResult]) -> dict[ConfigName, ConfigSummary]:
+def summarize(
+    per_question: dict[str, QuestionResult], configs: Sequence[ConfigName] = CONFIG_NAMES,
+) -> dict[ConfigName, ConfigSummary]:
     """Aggregate per-config averages across every question. Refusal questions
     contribute to refusal_ok only; content-judge lists only ever contain
     scores from non-refusal questions, so an all-refusal question set would
@@ -374,7 +437,7 @@ def summarize(per_question: dict[str, QuestionResult]) -> dict[ConfigName, Confi
     n_chunks reads ConfigurationResult.n_chunks — the computed property — so a
     "not_found" dynamic result correctly contributes 0, not len(["not found"])."""
     summary: dict[ConfigName, ConfigSummary] = {}
-    for name in CONFIG_NAMES:
+    for name in configs:
         n_chunks, faith, ctx_rel, complete, refusal_ok = [], [], [], [], []
         violations = 0
         for q_result in per_question.values():
@@ -399,23 +462,29 @@ def summarize(per_question: dict[str, QuestionResult]) -> dict[ConfigName, Confi
     return summary
 
 
-def evaluate(client, questions: list[dict]) -> EvaluationResult:
-    """Run every question through all five configs and return ONE
-    EvaluationResult — a frozen domain object, not a dict, and no printing. A
-    future UI renders directly from this; report() below is just one consumer
-    of it (the CLI table). See models.py / docs/evaluation-domain-model.md for
-    the full shape and its rationale."""
-    logger.info("evaluation started: %d questions x %d configs", len(questions), len(CONFIG_NAMES))
-    per_question = {q["id"]: evaluate_question(client, q) for q in questions}
+def evaluate(
+    client, questions: list[dict], configs: Sequence[str] = CONFIG_NAMES, cutoff: date | None = None,
+) -> EvaluationResult:
+    """Run one experiment — `questions` × the selected `configs` (all five by
+    default) × an optional recency `cutoff` — and return ONE EvaluationResult:
+    a frozen domain object, not a dict, and no printing. Each question runs as
+    its own q["audience"]. The CLI report() and the Dashboard both render from
+    this. See models.py / docs/evaluation-domain-model.md for the shape."""
+    selected = resolve_configs(configs)
+    logger.info("evaluation started: %d questions x %d configs cutoff=%s", len(questions), len(selected), cutoff)
+    per_question = {q["id"]: evaluate_question(client, q, selected, cutoff) for q in questions}
     metadata = EvaluationMetadata(
         question_count=len(questions),
-        configs=list(CONFIG_NAMES),
+        configs=selected,
         candidate_pool_size=CANDIDATE_POOL_SIZE,
         static_top_k=RERANK_STATIC_TOP_K,
         dynamic_threshold=MIN_RERANK_SCORE,
         baseline_top_k=BASELINE_TOP_K,
+        cutoff=cutoff,
     )
-    result = EvaluationResult(metadata=metadata, questions=per_question, summary=summarize(per_question))
+    result = EvaluationResult(
+        metadata=metadata, questions=per_question, summary=summarize(per_question, selected),
+    )
     logger.info("evaluation completed")
     return result
 
@@ -470,8 +539,7 @@ def _print_question_detail(q_result: QuestionResult) -> None:
     print(f"AUDIENCE: {q_result.audience}")
     print(f"EXPECTED REFUSAL: {q_result.expect_refusal}")
     print(f"Question text: {q_result.question}\n")
-    for name in CONFIG_NAMES:
-        cfg = q_result.configurations[name]
+    for cfg in q_result.configurations.values():
         _print_configuration_detail(cfg)
 
 
@@ -502,11 +570,12 @@ def report(results: EvaluationResult, questions: list[dict] | None = None) -> No
     print("FILTER + RERANK MIX — measured effect (averages over the question set)")
     print("=" * 78)
     print(f"candidate pool N={meta.candidate_pool_size}  static top-k={meta.static_top_k}  "
-          f"dynamic threshold={meta.dynamic_threshold}  baseline top-k={meta.baseline_top_k}")
+          f"dynamic threshold={meta.dynamic_threshold}  baseline top-k={meta.baseline_top_k}  "
+          f"cutoff={meta.cutoff.isoformat() if meta.cutoff else 'none'}")
     header = f"{'config':26} {'chunks':>7} {'faithful':>9} {'ctx_rel':>9} {'complete':>9} {'refuse_ok':>10} {'sec_viol':>9}"
     print(header)
     print("-" * len(header))
-    for name in CONFIG_NAMES:
+    for name in meta.configs:
         s = results.summary[name]
         print(f"{name:26} {_fmt(s.n_chunks_avg, '.1f'):>7} {_fmt(s.faithfulness_avg):>9} "
               f"{_fmt(s.context_relevance_avg):>9} {_fmt(s.completeness_avg):>9} "
@@ -521,19 +590,51 @@ def report(results: EvaluationResult, questions: list[dict] | None = None) -> No
         _print_selected_report(results, questions)
 
 
-def main() -> None:
+def save_result(results: EvaluationResult, run_id: str) -> Path:
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    path = RUNS_DIR / f"{run_id}.json"
+    path.write_text(results.model_dump_json(indent=2), encoding="utf-8")
+    return path
+
+
+def main(argv: Sequence[str] = ()) -> None:
+    # argv defaults to () rather than sys.argv so importing callers (tests) never
+    # parse someone else's command line; the __main__ block passes sys.argv[1:].
+    parser = argparse.ArgumentParser(
+        description="Evaluate an experiment: questions x configurations x optional recency cutoff.")
+    parser.add_argument("--questions", type=Path, default=None,
+                        help=f"question set JSONL (default: {QUESTIONS_FILE.relative_to(QUESTIONS_FILE.parents[1])})")
+    parser.add_argument("--ids", type=lambda s: [i.strip() for i in s.split(",") if i.strip()], default=None,
+                        help="comma-separated question ids from the set (default: all)")
+    parser.add_argument("--config", dest="configs", action="append", choices=CONFIG_NAMES, default=None,
+                        help="a configuration to run; repeat for several (default: all five)")
+    parser.add_argument("--cutoff", type=date.fromisoformat, default=None,
+                        help="recency cutoff YYYY-MM-DD: only chunks with last_updated >= cutoff (default: none)")
+    parser.add_argument("--save", action="store_true", help="write the EvaluationResult JSON under runs/")
+    parser.add_argument("--run-id", default=None, help="saved file name (default: <UTC timestamp>_<question set>)")
+    args = parser.parse_args(list(argv))
+
+    questions_path = args.questions or QUESTIONS_FILE
+    try:
+        questions = select_questions(load_questions(questions_path), args.ids)
+    except ValueError as e:
+        parser.error(str(e))  # exits before any logging setup, client or model call
+    configs = args.configs or list(CONFIG_NAMES)
+
     configure_logging()  # the ONLY call site — stdout stays the human report, stderr+logs/eval.log get the rest
     client = opensearch_client()
-    questions = load_questions()
-    print(f"Evaluating {len(questions)} questions x {len(CONFIG_NAMES)} configs "
-          "— this makes a lot of model calls (a few minutes).")
+    print(f"Evaluating {len(questions)} questions x {len(configs)} configs "
+          f"(≈ {estimate_calls(questions, configs)} model calls; this can take a few minutes).")
     try:
-        results = evaluate(client, questions)
+        results = evaluate(client, questions, configs=configs, cutoff=args.cutoff)
         report(results, questions)
+        if args.save:
+            run_id = args.run_id or f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}_{questions_path.stem}"
+            print(f"Saved: {save_result(results, run_id)}")
     except Exception:
         logger.exception("evaluation failed")
         raise
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

@@ -66,17 +66,17 @@ class ConfigureLoggingTests(_RootLoggerIsolation):
             self.assertEqual(sum(_is_console_handler(h) for h in handlers), 1)
             self.assertEqual(sum(_is_file_handler(h) for h in handlers), 1)
 
-    def test_console_handler_defaults_to_info(self):
+    def test_console_handler_defaults_to_warning(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             logging_setup.configure_logging(log_file=Path(tmp) / "eval.log")
             console = next(h for h in logging.getLogger().handlers if _is_console_handler(h))
-            self.assertEqual(console.level, logging.INFO)
+            self.assertEqual(console.level, logging.WARNING)
 
-    def test_file_handler_defaults_to_debug(self):
+    def test_file_handler_defaults_to_warning(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             logging_setup.configure_logging(log_file=Path(tmp) / "eval.log")
             file_handler = next(h for h in logging.getLogger().handlers if _is_file_handler(h))
-            self.assertEqual(file_handler.level, logging.DEBUG)
+            self.assertEqual(file_handler.level, logging.WARNING)
 
     def test_console_handler_writes_to_stderr_not_stdout(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -119,14 +119,17 @@ class ConfigureLoggingTests(_RootLoggerIsolation):
             logging_setup.configure_logging(log_file=log_file)
             self.assertTrue(log_file.parent.is_dir())
 
-    def test_a_debug_record_is_actually_written_to_the_file(self):
+    def test_a_warning_record_is_written_to_the_file_but_debug_is_not(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             log_file = Path(tmp) / "eval.log"
             logging_setup.configure_logging(log_file=log_file)
-            logging.getLogger("some.module").debug("marker-XYZ-12345")
+            logging.getLogger("some.module").warning("marker-WARN-12345")
+            logging.getLogger("some.module").debug("marker-DEBUG-12345")
             for h in logging.getLogger().handlers:
                 h.flush()
-            self.assertIn("marker-XYZ-12345", log_file.read_text(encoding="utf-8"))
+            text = log_file.read_text(encoding="utf-8")
+            self.assertIn("marker-WARN-12345", text)
+            self.assertNotIn("marker-DEBUG-12345", text)
 
     def test_third_party_loggers_are_kept_at_warning(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:

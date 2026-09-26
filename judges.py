@@ -17,6 +17,10 @@ The four judges, and why each moves when you change retrieval:
   - completeness      — what fraction of the question's required facts are in the answer?
                         (A large top_k can BURY a needed fact in noise; too small a
                         top_k can DROP it — completeness catches both.)
+  - context_completeness — completeness for questions with no key_facts (custom Chat
+                        questions): what fraction of the question-relevant facts in
+                        the RETRIEVED CONTEXT the answer states. A different metric
+                        from completeness — never averaged with it.
   - refusal           — did the answer decline to answer the question at all? Judged
                         by the model reading the whole response, never by keyword
                         matching — a phrase like "do not have" can occur naturally
@@ -125,6 +129,32 @@ def completeness(question: str, key_facts: list[str], answer: str) -> tuple[floa
     return _run_judge(COMPLETENESS_RUBRIC, [
         ("QUESTION", question),
         ("REQUIRED FACTS", facts),
+        ("ANSWER", answer),
+    ])
+
+
+# A second completeness MODE for questions with no key_facts (custom Chat
+# questions). It measures a different thing than completeness() above: coverage
+# of what the retrieved context could answer, not coverage of ground truth — so
+# a retrieval miss does not lower it. The two scores must never be averaged.
+CONTEXT_COMPLETENESS_RUBRIC = (
+    "You are a strict RAG evaluator scoring COMPLETENESS RELATIVE TO THE RETRIEVED "
+    "CONTEXT — how fully the ANSWER addresses the QUESTION using the information "
+    "available in the CONTEXT.\n"
+    "First identify the facts in the CONTEXT that are relevant to the QUESTION, then:\n"
+    "  score = the fraction of those question-relevant context facts that the answer "
+    "actually states.\n"
+    "  1.0 = the answer uses everything in the context that the question needs, "
+    "0.0 = it uses none of it.\n"
+    "Judge only against the CONTEXT: do not penalize the answer for information the "
+    "context does not contain, and do not reward claims the context does not support."
+)
+
+
+def context_completeness(question: str, contexts: list[str], answer: str) -> tuple[float, str]:
+    return _run_judge(CONTEXT_COMPLETENESS_RUBRIC, [
+        ("QUESTION", question),
+        ("CONTEXT", "\n\n".join(contexts)),
         ("ANSWER", answer),
     ])
 

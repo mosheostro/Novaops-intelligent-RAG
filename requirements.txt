@@ -6,3 +6,5 @@ python-dotenv
 opensearch-py
 # The evaluation domain-model layer (models.py) — see docs/evaluation-domain-model.md.
 pydantic
+# UI layer (ui/app.py)
+streamlit

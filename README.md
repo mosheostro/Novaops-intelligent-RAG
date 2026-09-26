@@ -2,12 +2,12 @@
 
 A filtered and reranked retrieval-augmented generation (RAG) pipeline over the NovaOps knowledge base, built on Amazon Bedrock and Amazon OpenSearch Serverless. It combines semantic vector retrieval, a hard audience/access boundary, soft subject-based metadata filtering, listwise reranking with a language model, adaptive context selection and grounded answer generation. An evaluation harness measures each mechanism on its own and in combination, so the effect of every stage is visible rather than assumed.
 
-> **Status: design and configuration baseline.** Configuration, the subject vocabulary and tagger, the OpenSearch/Bedrock wiring and the evaluation judges exist. The retrieval pipeline and the evaluation harness are the next implementation phase. See [Project structure](#project-structure) for what is implemented and what is planned.
+> **Status: implemented.** The retrieval pipeline, the five-configuration evaluation harness (with saved run artifacts) and a Streamlit dashboard (chat + evaluation laboratory) run against the live collection. The current architecture is documented in [`docs/architecture.md`](docs/architecture.md); an HTTP API and an MCP tool layer are future consumers, not implemented.
 
 ## Architecture
 
 ```
-Question + caller role (+ optional "updated after" date)
+Question + caller role (+ optional cutoff date: last_updated >= cutoff)
   → audience / access policy      hard filter derived from the caller's role
   → subject planning              forced tool call over a fixed vocabulary; [] means "no subject filter"
   → OpenSearch k-NN retrieval     all filters applied inside the vector query
@@ -25,10 +25,10 @@ Each stage has one job:
 | Subject filter | **Soft relevance mechanism.** A planner maps the question onto a shared subject vocabulary; only chunks carrying one of those subjects are searched. | Fails **open**: an empty plan means no subject restriction. |
 | Vector search | **Recall.** Finds semantically close chunks. | — |
 | Reranker | **Precision and order.** Scores all candidates together against the question. | Candidates the model omits score 0. |
-| Context selection | **Static** keeps the top 3. **Dynamic** keeps every candidate scoring ≥ 0.6 and, if none qualifies, returns an explicit "not found" instead of falling back to the best guess. | Low-confidence retrieval is never presented as valid evidence. |
+| Context selection | **Static** keeps the top 3. **Dynamic** keeps every candidate scoring ≥ 0.6 and, if none qualifies, selects zero chunks (`status = "not_found"`) instead of falling back to the best guess; the model is then prompted with "not found". | Low-confidence retrieval is never presented as valid evidence. |
 | LLM | **Answer synthesis** from the selected evidence only; it refuses when the context does not contain the answer. | — |
 
-An optional recency filter (chunks updated on or after a caller-supplied date) is available and is off unless a date is given.
+An optional recency cutoff — one date, keeping chunks with `last_updated >= cutoff` (inclusive) — is off unless a date is given. It is independent of the configuration choice, is exposed in the dashboard chat, and is not used by evaluation runs.
 
 ## Access control
 
@@ -42,7 +42,14 @@ Access control is hard security filtering, not a relevance signal, and it is enf
 
 ## Evaluation
 
-The evaluation harness runs the shared question set (`data/eval_questions.jsonl`, 10 questions, including an access-control case and an unanswerable case) through five configurations and scores them with the project's judges (faithfulness, context relevance, completeness, plus a refusal check). The access filter is on in **every** configuration; security is never the variable being measured.
+The evaluation harness runs a question set (by default `data/eval_questions.jsonl`, 10 questions, including an access-control case and an unanswerable case; `--questions PATH` selects another) through five configurations and scores them with the project's LLM judges (faithfulness, context relevance, completeness, plus an LLM refusal judge for questions expected to be refused). The access filter is on in **every** configuration; security is never the variable being measured. The planner runs once per question and reranking once per unique candidate pool, shared by the static and dynamic cuts.
+
+```bash
+python eval.py                                   # print the report
+python eval.py --save                            # also save runs/<timestamp>_<set>.json
+python eval.py --ids SEV_3YR,ACCESS_REVIEW --config baseline --config "filter + rerank dynamic" \
+               --cutoff 2025-04-28 --save  # one experiment: questions x configurations x cutoff
+```
 
 | # | Configuration | Retrieval | Filter | Rerank | Final context |
 |---|---|---|---|---|---|
@@ -52,23 +59,40 @@ The evaluation harness runs the shared question set (`data/eval_questions.jsonl`
 | 4 | filter + rerank, static | vector, N = 10 | access + subject | yes | static top 3 |
 | 5 | filter + rerank, dynamic | vector, N = 10 | access + subject | yes | every score ≥ 0.6 |
 
-Results are not published yet; they will be added once the harness has run.
+Results are not published in this README; saved runs can be browsed in the dashboard.
+
+## Dashboard
+
+```bash
+streamlit run ui/app.py        # from the project root
+```
+
+- **Chat**: ask a custom question as a demo role (employee/manager — not authentication), pick one of the five configurations and an optional cutoff date, optionally score with judges, and inspect the sources and the full pipeline trace.
+- **Evaluation runs**: configure an experiment — pick test cases from `data/eval_questions.jsonl` by id, one or more of the five configurations, and an optional cutoff — review the run summary and estimated model calls, confirm the cost, and launch it as a separate `eval.py` subprocess; browse saved runs. Each test case runs as its own dataset audience; there is no audience override and no access-filter control.
+- **Run detail**: the per-configuration summary, a questions × configurations matrix, and a per-question drill-down.
 
 ## Project structure
 
 ```
-config.py            Central configuration: loads .env, validates it, exposes settings   [implemented]
-client.py            OpenSearch Serverless + Bedrock wiring, embeddings, shared constants [implemented]
-judges.py            Faithfulness, context relevance, completeness, refusal check         [implemented]
-subjects.py          Subject vocabulary, Nova tagger, cached tagging                      [implemented]
-subjects.json        Cached subject tags for each document                                [implemented]
-create_index.py      Index mapping; verifies an existing index rather than replacing it   [planned]
-ingest.py            Frontmatter parsing, chunking, tagging, embedding, indexing          [planned]
-retrieval.py         Access/subject/recency filters, k-NN search, answer generation       [planned]
-planner.py           Question → subjects (fail-open subject planner)                      [planned]
-reranker.py          Listwise reranker and the static/dynamic context cuts               [planned]
-eval.py              The five-configuration evaluation harness                            [planned]
-tests/               Unit tests (configuration today)                                     [in progress]
+config.py            Central configuration: loads .env, validates it, exposes settings
+client.py            OpenSearch Serverless + Bedrock wiring, embeddings, shared constants
+judges.py            LLM judges: faithfulness, context relevance, completeness, refusal
+subjects.py          Subject vocabulary, Nova tagger, cached tagging
+subjects.json        Cached subject tags for each document
+create_index.py      Index mapping; verifies an existing index rather than replacing it
+ingest.py            Frontmatter parsing, chunking, tagging, embedding, indexing (empty index only)
+retrieval.py         Access/subject/recency filters, k-NN search, answer generation
+planner.py           Question → subjects (fail-open subject planner)
+reranker.py          Listwise reranker (ranks only; the cuts live in eval.py)
+models.py            Frozen Pydantic domain models — the contract every consumer reads
+eval.py              Evaluation harness; CLI --ids/--config/--cutoff/--save/--run-id (--questions for another file)
+ask.py               One custom question through one configuration (used by the dashboard)
+runs.py              Saved run artifacts under runs/ and the eval.py subprocess launcher
+logging_setup.py     Centralized logging configuration (called only from eval.py main())
+manage.py            Collection status / teardown (control plane; typed confirmation)
+ui/                  Streamlit dashboard (app.py, pages/, components/)
+.streamlit/          Dashboard theme
+tests/               Unit tests — no network, all AWS calls mocked
 data/                The NovaOps corpus and the evaluation questions
 docs/                Architecture and design decisions
 requirements.txt     Python dependencies
@@ -79,7 +103,7 @@ CLAUDE.md            Working conventions for AI-assisted development
 
 ## Data
 
-`data/` contains the NovaOps corpus the project runs on, and it is intentionally part of this repository. It holds 32 Markdown documents: 15 in `handbook/` (company-wide, `audience: all`) and 17 in `manager_playbook/` (manager-only, `audience: manager`). Each document starts with frontmatter (`last_updated`, `corpus`, `audience`), which is the authoritative source for the access and recency metadata and is stripped before embedding. Documents are split into 250-word chunks with 50 words of overlap, which yields 400 chunks. `data/eval_questions.jsonl` holds the evaluation questions with their required facts and expected refusals.
+`data/` contains the NovaOps corpus the project runs on, and it is intentionally part of this repository. It holds 32 Markdown documents: 15 in `handbook/` (company-wide, `audience: all`) and 17 in `manager_playbook/` (manager-only, `audience: manager`). Each document starts with frontmatter (`last_updated`, `corpus`, `audience`), which is the authoritative source for the access and recency metadata and is stripped before embedding. Documents are split into 250-word chunks with 50 words of overlap, which yields 400 chunks. `data/eval_questions.jsonl` holds the evaluation questions with their required facts and expected refusals. It is the single source of preset evaluation questions; its size is whatever the file contains. Each record is one test case — `id`, `question`, `audience` (the role it runs as), `expect_refusal`, `key_facts`, `report` (CLI detail) and `scenario` (`standard` / `cross_source` / `access_boundary` / `out_of_corpus`, display only).
 
 ## AWS prerequisites
 

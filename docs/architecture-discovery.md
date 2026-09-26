@@ -1,7 +1,7 @@
 # Architecture — NovaOps Intelligent RAG
 
 **Date:** 2026-09-20
-**Status:** `config.py` and `retrieval.py` are implemented and unit-tested (offline, no network). `planner.py`, `reranker.py`, `create_index.py`, `ingest.py` and `eval.py` are not yet implemented. No write of any kind has been made to OpenSearch.
+**Status:** Design and discovery record. All modules below are now implemented; the **current** architecture (including `ask.py`, `runs.py`, the dashboard, logging and the recency cutoff) is in `docs/architecture.md`, which wins where the two differ. Statements below that the implementation changed are corrected in place and marked *(updated 2026-09-26)*. No write of any kind has been made to OpenSearch.
 **See also:** `docs/security-concepts.md` — the access-control model in detail (audience support, fail-closed rationale, enforcement point, extensibility).
 
 The project is a filtered and reranked RAG pipeline over the NovaOps knowledge base. It combines metadata filtering (an access boundary plus subject and recency filters) with listwise reranking, and includes an evaluation that measures the separate and combined effect of both. It builds on an existing, already-populated OpenSearch Serverless index and on earlier metadata-filtering and reranking prototypes whose behavior it inherits wherever a decision was already made.
@@ -52,7 +52,7 @@ Access control is a hard, fail-closed boundary and is on in **every** configurat
 
 ## 2. Evaluation Matrix (five configurations)
 
-Common to all: access filter on (from the question's `audience` role), recency off (no eval question carries a date), same 10 questions, same three judges + `refused()`.
+Common to all: access filter on (from the question's `audience` role), recency off (no eval question carries a date), same question set, same three content judges + the LLM refusal judge *(updated 2026-09-26: the `refused()` keyword heuristic was replaced by `judges.refusal()`)*.
 
 | # | Config | Subject filter | Retrieval | Rerank | Final context |
 |---|---|---|---|---|---|
@@ -60,7 +60,7 @@ Common to all: access filter on (from the question's `audience` role), recency o
 | 2 | **filter-only** | yes (planner) | k-NN, k = 4 | no | the 4, vector order |
 | 3 | **rerank-only** | no | k-NN, N = 10 | yes | top 3 (static) |
 | 4 | **filter + rerank static** | yes | k-NN, N = 10 | yes | top 3 |
-| 5 | **filter + rerank dynamic** | yes | k-NN, N = 10 | yes | every score ≥ 0.6; none → `["not found"]` |
+| 5 | **filter + rerank dynamic** | yes | k-NN, N = 10 | yes | every score ≥ 0.6; none → zero chunks, `status = "not_found"`, prompt context `["not found"]` |
 
 **What each comparison isolates**
 
@@ -76,8 +76,8 @@ Common to all: access filter on (from the question's `audience` role), recency o
 - Row 3 uses the static top-3 cut, which keeps 3 → 4 a single-variable comparison.
 - **Plan once per question** and reuse across configs. Only rows 2, 4, 5 use the plan.
 - **Rerank once per (question, pool)** and derive rows 4 and 5 from the same scored list. Reranking per config would make static-vs-dynamic differ by model noise as well as by the cut. Sharing makes 4 → 5 differ only in the cut and drops the rerank calls from 30 to 20. Results are still reported as separate rows.
-- **Refusal handling:** for `expect_refusal` questions only `refused(answer)` is scored (both are `employee`); judges are not run. Answerable questions (8) get all three judges. The table also reports the average chunk count fed to the model, since row 5's context size floats.
-- **Security assertion in the eval:** for every `employee` question, assert that no retrieved hit has `audience == "manager"`. Access is never the variable, and this makes a leak fail loudly instead of hiding in an average.
+- **Refusal handling:** for `expect_refusal` questions only the refusal judge is scored — `judges.refusal(question, answer)`, an LLM judge, stored as `refusal_ok` *(updated 2026-09-26; originally the `refused(answer)` keyword heuristic)* (both are `employee`); content judges are not run. Answerable questions (8) get all three judges. The table also reports the average chunk count fed to the model, since row 5's context size floats.
+- **Security audit in the eval:** for every `employee` question, check that no retrieved hit has `audience == "manager"`. Access is never the variable, and this makes a leak fail loudly instead of hiding in an average. *(Updated 2026-09-26: implemented as `SecurityAudit` over the whole candidate pool — recorded, logged at ERROR and counted per config, not an `assert` that stops the run.)*
 - **Cost:** about 20 rerank + 50 answer + 120 judge + 10 planner ≈ 200 model calls, plus ~50 embeddings.
 - **Effect of `"not found"` on the numbers:** for an answerable question where nothing clears 0.6, row 5's context is the single string `"not found"`; `context_relevance` will score it 0 and `completeness` will drop. That is the intended cost of the reliability choice, not a bug in the eval.
 
@@ -116,7 +116,7 @@ Method: `GET` mapping/settings, `count`, `search` (`match_all` without vectors, 
 
 Per decision 11: `client.py` is the sole owner of Bedrock runtime client construction (and, separately, of the OpenSearch data-plane client). Every component below consumes `bedrock` / `opensearch_client()` / `embed_text()` from it; none constructs a Bedrock client of its own. (`manage.py`'s own OpenSearch **control-plane** client is a distinct, intentional exception — §11 item 4 — and is not one of the components listed below.)
 
-**`judges.py` — the three eval judges + refusal check. Provided, stable file; not redesigned.** Uses the shared `client.bedrock` — no client of its own (as of the decision-11 cleanup). `faithfulness`, `context_relevance`, `completeness` each run one forced `submit_score` tool call against a per-metric rubric; `refused()` is a keyword heuristic, no model call. `MODEL_ID` is still read directly from `os.environ["BEDROCK_MODEL_ID"]`, same as `planner.py`/`reranker.py`/`retrieval.py` — decision 11 covers client construction only; centralizing `MODEL_ID` through `config.py` (which already validates and exposes it) across all four modules is a separate, not-yet-made decision (§11 item 3).
+**`judges.py` — the three eval judges + refusal check. Provided, stable file; not redesigned.** Uses the shared `client.bedrock` — no client of its own (as of the decision-11 cleanup). `faithfulness`, `context_relevance`, `completeness` each run one forced `submit_score` tool call against a per-metric rubric; `refusal()` runs one forced boolean tool call at temperature 0.0 over the question and the whole answer *(updated 2026-09-26; it replaced the `refused()` keyword heuristic)*. `MODEL_ID` is still read directly from `os.environ["BEDROCK_MODEL_ID"]`, same as `planner.py`/`reranker.py`/`retrieval.py` — decision 11 covers client construction only; centralizing `MODEL_ID` through `config.py` (which already validates and exposes it) across all four modules is a separate, not-yet-made decision (§11 item 3).
 
 **`config.py` — central configuration (no network).** `load_dotenv(find_dotenv())`; requires `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `BEDROCK_MODEL_ID`, `BEDROCK_EMBEDDING_MODEL_ID`, `OPENSEARCH_COLLECTION`; blank counts as missing; **all** missing names are reported in one error; no defaults for region or model IDs. Validates the optional `OPENSEARCH_AWS_ACCESS_KEY_ID` / `OPENSEARCH_AWS_SECRET_ACCESS_KEY` pair (both or neither) and exposes optional `OPENSEARCH_ENDPOINT` (or `None`). Exposes only the non-secret settings as module constants (`AWS_REGION`, `BEDROCK_MODEL_ID`, `BEDROCK_EMBEDDING_MODEL_ID`, `OPENSEARCH_COLLECTION`, `OPENSEARCH_ENDPOINT`); credentials are checked but never re-exported. Validation runs at import, so **every entry point imports `config` first**: `client.py` still reads `AWS_REGION` and `BEDROCK_EMBEDDING_MODEL_ID` from the environment itself (with silent defaults) rather than through `config`, and `judges.py`/`planner.py`/`reranker.py`/`retrieval.py` each still read `BEDROCK_MODEL_ID` directly (no default — see §11 item 3); none of these five is routed through `config`. New modules take region and model IDs from `config`, never from `os.environ` directly.
 
@@ -130,9 +130,9 @@ Per decision 11: `client.py` is the sole owner of Bedrock runtime client constru
 
 **`planner.py` — fail-open subject planner.** Forced `pick_subjects` tool over the imported `SUBJECTS`; recall-biased; `[]` for broad/unmappable; invalid labels dropped. Uses the shared `bedrock` client from `client.py` — no client of its own.
 
-**`reranker.py` — listwise reranker + the cut.** Uses the shared `bedrock` client from `client.py` — no client of its own. `rerank_all` (one forced `rank` call, all candidates, whole chunks, scores clamped to 0–1, missing or out-of-range index → 0.0, stable order); `rerank(query, candidates, top_k)`; plus two pure functions for the two cuts — static top-k and dynamic threshold (which returns the `"not found"` sentinel when nothing passes). Placing the cuts here rather than inside `eval.py` makes them deterministically testable. The scoring prompt ("score each candidate 0.0–1.0 for how well it helps answer the query") is kept as in the earlier prototype: the 0.6 threshold is calibrated to that wording.
+**`reranker.py` — listwise reranker + the cut.** Uses the shared `bedrock` client from `client.py` — no client of its own. `rerank_all` (one forced `rank` call, all candidates, whole chunks, scores clamped to 0–1, missing or out-of-range index → 0.0, stable order); `rerank(query, candidates, top_k)`. *(Updated 2026-09-26: the reranker only ranks; the two cuts ended up in `eval.py` as the pure `select_context(ranked, "static" | "dynamic")`, still deterministically testable, and "nothing passes" yields an empty selection with `status = "not_found"` rather than a sentinel chunk.)* The scoring prompt ("score each candidate 0.0–1.0 for how well it helps answer the query") is kept as in the earlier prototype: the 0.6 threshold is calibrated to that wording.
 
-**`eval.py` — the five-configuration harness.** Takes its OpenSearch client as a parameter (`evaluate(client, questions)`); `main()` constructs the one real client via `client.opensearch_client()` and passes it down — `eval.py` never builds a client itself. Constants local to the file: `RETRIEVE_N = 10`, `STATIC_K = 3`, `MIN_SCORE = 0.6`, baseline k = `client.TOP_K`. Five configs (§2), plan-once, rerank-once-per-pool, `n_chunks` column, refusal path via `refused()`, employee security assertion. Prints the comparison table.
+**`eval.py` — the five-configuration harness.** Takes its OpenSearch client as a parameter (`evaluate(client, questions)`); `main()` constructs the one real client via `client.opensearch_client()` and passes it down — `eval.py` never builds a client itself. Constants local to the file *(updated 2026-09-26 to the implemented names)*: `CANDIDATE_POOL_SIZE = 10`, `RERANK_STATIC_TOP_K = 3`, `MIN_RERANK_SCORE = 0.6`, `BASELINE_TOP_K = 4`. Five configs (§2), plan-once, rerank-once-per-pool, `n_chunks`, refusal path via the LLM refusal judge, employee security audit. `evaluate()` returns a frozen `EvaluationResult` (`models.py`); `report()` prints it and `--save` writes it to `runs/`.
 
 ---
 
@@ -167,10 +167,12 @@ eval.py ─► planner.plan_subjects(q)              [imports subjects.SUBJECTS;
         ─► retrieval.build_filter(role, subjects, date)
         ─► retrieval.knn_search(...)             [k=4 for rows 1–2, N=10 for rows 3–5]
         ─► reranker.rerank_all(q, candidates)    [once per (question, pool)]
-        ─► reranker cuts: static top-3 | dynamic ≥0.6 | "not found"
+        ─► eval.select_context: static top-3 | dynamic ≥0.6 | none → not_found
         ─► retrieval.answer(q, contexts)
-        ─► judges.* / judges.refused
+        ─► judges.* / judges.refusal
 ```
+
+*(Updated 2026-09-26: `ask.py` runs the same steps for one custom question and one configuration; see `docs/architecture.md` §1–§2.)*
 
 Shared state between modules: only `subjects.SUBJECTS`.
 
@@ -192,7 +194,7 @@ Shared state between modules: only `subjects.SUBJECTS`.
 | Low-confidence retrieval treated as evidence | Dynamic cut returns `["not found"]`, no top-1 fallback |
 | Reranker omits / mis-indexes a candidate | Missing or out-of-range → 0.0; per-entry parse guarded; stable sort |
 | Static-vs-dynamic difference is really model noise | Rerank once per pool; both cuts read the same scores |
-| `refused()` keyword heuristic misclassifies | Read the printed answers; treat refusal columns as indicative |
+| Refusal misclassified | *(Updated 2026-09-26)* LLM refusal judge over the whole answer instead of keywords; still read the answers and treat the refusal column as indicative (see the `ACCESS_REVIEW` known issue in `docs/architecture.md` §12) |
 | Approximate recall from on-disk 32x quantized vectors | Inherent to the existing index; unchanged by this work |
 | Cold-start timeout | Handled in `client.py` (`timeout=120`, retries) |
 | Missing or blank configuration masked by a default in an existing module | `config.py` validates all six required variables first and raises one error naming every missing one; entry points import it before `client`, `judges`, `subjects` |
@@ -213,7 +215,7 @@ Required: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `BEDROCK_M
 3. `build_filter("employee", ["pay_and_benefits"], "2024-01-01")` → access + `terms` + `range` in one `bool.must`.
 4. Planner and tagger use the same `SUBJECTS` object.
 5. `parse_frontmatter` leaves no `---` block; chunker yields **400** chunks over `data/` at 250/50; missing/invalid `audience` raises.
-6. Static cut keeps exactly k; dynamic cut keeps all ≥ 0.6 in order; dynamic with none passing returns `["not found"]` (not the top-1).
+6. Static cut keeps exactly k; dynamic cut keeps all ≥ 0.6 in order; dynamic with none passing selects nothing (`status = "not_found"`, prompt context `["not found"]`) — not the top-1.
 7. Reranker with a stubbed tool response: omitted index → 0.0, out-of-range ignored, scores clamped, stable ties, malformed entry skipped.
 8. `create_index.py` / `ingest.py` refuse to delete or append without the explicit path (unit-level, no AWS).
 9. `config.load_config`: all six required present → non-secret settings returned; every missing name reported together; blank counts as missing; no default for region or model IDs; the optional credential pair is both-or-neither. **Implemented** in `tests/test_config.py` (stdlib `unittest`, 13 tests, no network); run with `python -m unittest`.

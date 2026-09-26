@@ -36,3 +36,6 @@ validate-lab/
 PROMPT.md
 CLAUDE.md-example
 docs/code-reuse-analysis.md
+
+# Saved evaluation runs (eval.py --save / UI launcher)
+runs/

@@ -1,6 +1,12 @@
 # Evaluation Domain Model — Design (Pydantic domain-contract layer)
 
-**Status:** **Design ready for implementation.** No code has been changed by this document. The model hierarchy (§4), the semantic decisions (§6), and the per-function boundary (§10) are all resolved; §11 is the checklist the implementation task should follow.
+**Status:** **Implemented** in `models.py` (design record below kept as written). Additions made after this design, all backward-compatible with saved runs *(2026-09-26)*:
+- `LiveJudgement` and `AskResult` — the result of one custom question through one configuration (`ask.ask()`, used by the dashboard chat). `LiveJudgement.refused` is the observed verdict of the same `judges.refusal` batch evaluation uses; there is no `refusal_ok` because a custom question has no expected behavior. `LiveJudgement.completeness` / `completeness_reason` come from `judges.context_completeness` (question + retrieved context + answer) — a different basis from `ContentEvaluation.completeness` (key facts); `None` when there is no usable context (zero selected chunks or a refusal). `AskResult` reuses `RetrievalResult` and `SelectionResult`, so the same renderers serve chat and saved runs.
+- `RetrievalResult.cutoff: date | None = None` — the applied recency cutoff (`last_updated >= cutoff`); evaluation runs never set it.
+- `RefusalEvaluation.refusal_ok` is now produced by the LLM refusal judge (`judges.refusal`), not the `refused()` keyword heuristic mentioned below.
+- `EvaluationResult` is persisted as JSON under `runs/` via `eval.py --save` (the "saved artifact" boundary of §8).
+
+Current architecture overall: `docs/architecture.md`.
 **Scope:** The evaluation subsystem's *result* (what `eval.py` returns), not its computation. Retrieval, reranking, planning, judging and security enforcement are unchanged.
 
 ---

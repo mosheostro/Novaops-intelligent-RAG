@@ -104,5 +104,49 @@ class RefusalJudgeTests(unittest.TestCase):
         self.assertFalse(hasattr(judges, "refused"))
 
 
+def _score_response(score, reason="ok"):
+    return {"output": {"message": {"content": [
+        {"toolUse": {"name": "submit_score", "input": {"score": score, "reason": reason}}}
+    ]}}}
+
+
+class ContextCompletenessJudgeTests(unittest.TestCase):
+    """The Chat completeness mode: question + retrieved context + answer. The
+    batch completeness judge (question + key_facts + answer) stays unchanged."""
+
+    @patch("judges.bedrock")
+    def test_one_forced_score_call_with_question_context_and_answer(self, fake_bedrock):
+        fake_bedrock.converse.return_value = _score_response(0.75, "covers 3 of 4 context facts")
+        score, reason = judges.context_completeness("How much PTO?", ["20 days a year", "cap 27 days"], "20 days.")
+        self.assertEqual((score, reason), (0.75, "covers 3 of 4 context facts"))
+        kwargs = fake_bedrock.converse.call_args.kwargs
+        self.assertEqual(fake_bedrock.converse.call_count, 1)
+        self.assertEqual(kwargs["system"], [{"text": judges.CONTEXT_COMPLETENESS_RUBRIC}])
+        self.assertEqual(kwargs["toolConfig"]["toolChoice"], {"tool": {"name": "submit_score"}})
+        self.assertEqual(kwargs["inferenceConfig"], {"temperature": 0.0})
+        message = kwargs["messages"][0]["content"][0]["text"]
+        for section in ("### QUESTION\nHow much PTO?", "### CONTEXT\n20 days a year\n\ncap 27 days",
+                        "### ANSWER\n20 days."):
+            self.assertIn(section, message)
+        self.assertNotIn("REQUIRED FACTS", message)  # no invented key facts
+
+    @patch("judges.bedrock")
+    def test_score_is_clamped_to_the_unit_interval(self, fake_bedrock):
+        fake_bedrock.converse.return_value = _score_response(1.7)
+        self.assertEqual(judges.context_completeness("q", ["c"], "a")[0], 1.0)
+
+    def test_rubric_is_about_the_retrieved_context_not_required_facts(self):
+        self.assertIn("CONTEXT", judges.CONTEXT_COMPLETENESS_RUBRIC)
+        self.assertNotEqual(judges.CONTEXT_COMPLETENESS_RUBRIC, judges.COMPLETENESS_RUBRIC)
+
+    @patch("judges.bedrock")
+    def test_batch_completeness_is_unchanged_and_still_uses_required_facts(self, fake_bedrock):
+        fake_bedrock.converse.return_value = _score_response(0.5)
+        judges.completeness("q", ["fact A"], "a")
+        kwargs = fake_bedrock.converse.call_args.kwargs
+        self.assertEqual(kwargs["system"], [{"text": judges.COMPLETENESS_RUBRIC}])
+        self.assertIn("### REQUIRED FACTS\n- fact A", kwargs["messages"][0]["content"][0]["text"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -16,6 +16,7 @@ This module holds no logic beyond field validation; it does not know how a
 question is evaluated, retrieved, reranked, or scored. That stays in eval.py,
 which imports these types and constructs them.
 """
+from datetime import date
 from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -93,12 +94,17 @@ class RetrievalResult(_Frozen):
 
     `subjects_applied` is None when no subject filter was used at all
     (baseline, rerank-only) — distinct from an empty list, which means the
-    planner ran and deliberately found nothing to filter on (fail-open)."""
+    planner ran and deliberately found nothing to filter on (fail-open).
+
+    `cutoff` is the recency constraint that was applied (`last_updated >=
+    cutoff`), or None for none. Independent of the configuration; evaluation
+    runs never set it. Defaults to None so runs saved before it existed load."""
     audience: str
     subjects_applied: list[str] | None
     top_k_requested: int
     candidates: list[Candidate]
     security: SecurityAudit
+    cutoff: date | None = None
 
 
 class SelectionResult(_Frozen):
@@ -159,13 +165,16 @@ class ConfigurationResult(_Frozen):
 
 
 class QuestionResult(_Frozen):
-    """Everything produced for one question, across all five configurations."""
+    """Everything produced for one question, across the configurations that
+    were run (all five by default). `planned_subjects` is None when no selected
+    configuration uses the subject filter, so the planner never ran — distinct
+    from [], which means it ran and found nothing."""
     id: str
     question: str
     audience: str
     expect_refusal: bool
     key_facts: list[str]
-    planned_subjects: list[str]
+    planned_subjects: list[str] | None
     configurations: dict[ConfigName, ConfigurationResult]
 
 
@@ -177,6 +186,7 @@ class EvaluationMetadata(_Frozen):
     static_top_k: int
     dynamic_threshold: float
     baseline_top_k: int
+    cutoff: date | None = None  # recency cutoff applied to every retrieval; None = none (and runs saved before it)
 
 
 class ConfigSummary(_Frozen):
@@ -202,3 +212,38 @@ class EvaluationResult(_Frozen):
     metadata: EvaluationMetadata
     questions: dict[str, QuestionResult]
     summary: dict[ConfigName, ConfigSummary]
+
+
+class LiveJudgement(_Frozen):
+    """Judge results for an ad-hoc question asked through the UI. `refused` is the
+    OBSERVED behavior from the same refusal judge batch evaluation uses; there is
+    deliberately no refusal_ok, because a custom question has no expected
+    behavior to compare against.
+
+    `completeness` is judged against the RETRIEVED CONTEXT
+    (judges.context_completeness) — not against key_facts, which a custom
+    question does not have — so it must never be mixed with
+    ContentEvaluation.completeness. It is None (not judged, no model call) when
+    there is no usable context: zero selected chunks, or a refusal."""
+    faithfulness: float
+    faithfulness_reason: str
+    context_relevance: float
+    context_relevance_reason: str
+    refused: bool
+    completeness: float | None
+    completeness_reason: str | None
+
+
+class AskResult(_Frozen):
+    """One ad-hoc question answered by ONE configuration — what ask.ask() returns
+    and the chat screen renders. `planned_subjects` is None when the config never
+    ran the planner (baseline, rerank-only); `judgement` is None when judging was
+    not requested."""
+    question: str
+    audience: str
+    config: ConfigName
+    planned_subjects: list[str] | None
+    retrieval: RetrievalResult
+    selection: SelectionResult
+    answer: str
+    judgement: LiveJudgement | None
