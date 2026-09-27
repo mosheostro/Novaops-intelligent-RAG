@@ -13,9 +13,10 @@ def _load(run_id: str) -> EvaluationResult:
 
 
 run_id = st.query_params.get("run")
-st.page_link("pages/eval_runs.py", label="All runs", icon=":material/arrow_back:")
+st.page_link("app_pages/eval_runs.py", label="All runs", icon=":material/arrow_back:")
 if not run_id or runs.run_status(run_id) != "done":
-    st.info("Pick a finished run from the Evaluation runs page.")
+    st.info("**No evaluation run selected**  \nOpen an evaluation run from the Runs page to view its details.",
+            icon=":material/info:")
     st.stop()
 
 result = _load(run_id)

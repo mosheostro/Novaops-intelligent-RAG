@@ -2,6 +2,7 @@
 import streamlit as st
 
 from models import RetrievalResult, SelectionResult
+from ui.components.safe_markdown import neutralize_links
 
 
 def render(config: str, retrieval: RetrievalResult, selection: SelectionResult, answer: str) -> None:
@@ -21,4 +22,4 @@ def render(config: str, retrieval: RetrievalResult, selection: SelectionResult, 
     if selection.status == "not_found":
         st.warning("No evidence above the rerank threshold — the answer was generated from no context.",
                    icon=":material/search_off:")
-    st.markdown(answer)
+    st.markdown(neutralize_links(answer))  # no clickable internal/external links

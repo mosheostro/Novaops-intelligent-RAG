@@ -15,6 +15,7 @@ from unittest.mock import patch
 for _name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "BEDROCK_MODEL_ID",
               "BEDROCK_EMBEDDING_MODEL_ID", "OPENSEARCH_COLLECTION"):
     os.environ.setdefault(_name, "test-value")
+os.environ.setdefault("APP_PASSWORD", "test-password")  # the UI refuses to run without one
 
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
@@ -23,6 +24,14 @@ import models  # noqa: E402
 import runs  # noqa: E402
 
 APP = str(Path(__file__).resolve().parent.parent / "ui" / "app.py")
+
+
+def _app():
+    """An AppTest of the dashboard, already signed in — the password gate itself
+    is tested in test_access.py."""
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state["authenticated"] = True
+    return at
 CLIENT = object()
 REFUSAL_TEXT = "I don't have that information in the provided context."
 
@@ -70,10 +79,10 @@ class BatchJudgeFlowTests(unittest.TestCase):
     def _detail(self, result, run_id):
         # run ids are unique per test: the detail page caches loaded runs by id (runs are immutable)
         ev.save_result(result, run_id)                   # the same persistence path a real run uses
-        at = AppTest.from_file(APP, default_timeout=30)
+        at = _app()
         at.query_params["run"] = run_id
         at.run()
-        at.switch_page("pages/eval_run_detail.py").run()
+        at.switch_page("app_pages/eval_run_detail.py").run()
         self.assertFalse(at.exception)
         return at
 
@@ -128,7 +137,7 @@ class ChatJudgeFlowTests(unittest.TestCase):
         self.addCleanup(patch.stopall)
 
     def _ask(self, question="What was the AWS bill?", judged=True):
-        at = AppTest.from_file(APP, default_timeout=30).run()
+        at = _app().run()
         if judged:
             at.toggle(key="chat_judge").set_value(True).run()
         at.chat_input[0].set_value(question).run()

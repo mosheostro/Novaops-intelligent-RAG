@@ -18,4 +18,4 @@ def render(run_id: str) -> None:
                 st.error(str(e))
                 return
             st.cache_data.clear()  # the detail page caches loaded runs by id
-            st.switch_page("pages/eval_runs.py")
+            st.switch_page("app_pages/eval_runs.py")

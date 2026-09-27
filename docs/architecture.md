@@ -219,6 +219,7 @@ The Dashboard is an **evaluation laboratory and presentation layer**: it exposes
   - The pipeline trace shows the subject filter state, the cutoff, the pool size, the selection rule, and the **full candidate pool** with vector scores, rerank scores, a selected flag and the final rank.
   - History is per browser session and single-turn: it is never sent to the model.
   - Layout: the controls (configuration, cutoff, judges toggle, **Clear**) stay at the top; only the conversation scrolls, in a fixed-height container that auto-scrolls to the newest message; the input is pinned at the bottom. **Clear** empties this session's conversation only — settings, saved runs and datasets are untouched.
+  - Links are never clickable in model/user text: `ui/components/safe_markdown.neutralize_links` (applied to the answer, judge reasons and the echoed question) keeps a link's label, an image's alt text, and shows bare URLs / angle-bracket links / e-mails as code — relative `.md`, internal, localhost, `file://` and external links alike (Option A). Presentation only; stored answers are unchanged.
   - Sources show chunk text as plain text in a bounded, scrollable box (never as markdown, so a chunk starting with `# Title` cannot become a heading); every answer shows an access badge (`access ok` / `access violation`).
   - Refusal presentation: Chat shows "Expected: none — custom question · Detected (refusal judge): Refusal: Yes / No" (never Refusal OK). In runs, expected-refusal cases show *Expected: refusal · Actual (refusal judge): refused / did not refuse · Refusal OK ✓/✗ · content judges skipped*; answerable cases show *Expected: answer · Refusal: not judged*. The question matrix has an *Expected* column. Presentation only — no score is invented.
 - **Help** — a sidebar expander on every page: what the dashboard is, Chat vs runs, the five configurations, cutoff, judges, Refusal OK, sources/trace, runs, and the Bedrock cost warning.
@@ -232,6 +233,15 @@ The Dashboard is an **evaluation laboratory and presentation layer**: it exposes
 
 ---
 
+### Deployment boundary (`ui/access.py`, UI only)
+
+- **Secrets bridge.** `ui/app.py`, before importing `config`, loads the local `.env` and copies the `config.py` variables (six required + `OPENSEARCH_AWS_*` + `OPENSEARCH_ENDPOINT`) from `st.secrets` into `os.environ` only where the environment has no non-blank value — precedence shell > `.env` > Streamlit secrets. Only names are ever reported, never values. `config.py` remains Streamlit-free and unchanged. A side effect: the evaluation subprocess inherits the bridged variables, so launched runs work on Cloud too.
+- **Password gate.** `APP_PASSWORD` (environment/`.env` first, then `st.secrets`) is mandatory for every UI run, locally and on Streamlit Community Cloud. Missing, empty or whitespace-only → a clear configuration error and `st.stop()`: no passwordless mode, no environment-based bypass. Otherwise a login screen (`NovaOps Intelligent RAG`, password field, *Sign in*); the input is compared with `hmac.compare_digest`; success sets `st.session_state["authenticated"]`; a wrong password shows only "Incorrect password.". The gate runs before `config`, the RAG modules or the page navigation are imported or rendered. `APP_PASSWORD` is never copied into `os.environ`, logged or displayed.
+- **Lifecycle (`ui/app.py`, every run).** Gate → `import config` (a `ConfigError` becomes a safe *Configuration error* naming only the missing variables, no traceback, no values) → shared sidebar (Role radio, so `st.session_state["role"]` exists, and Help) → `st.navigation` → page. Page scripts live in `ui/app_pages/`, deliberately **not** `ui/pages/`: a `pages/` folder next to the entry script enables Streamlit's legacy auto-discovered pages, which Streamlit falls back to whenever a run stops before `st.navigation` (the login screen) — it then lists them and runs a page file on its own, bypassing the gate, `config` and the sidebar. A test forbids `ui/pages/`.
+- **Scope.** Basic shared-password demo protection — not user authentication, authorization, OAuth/OIDC or per-user identity. The Employee/Manager role remains a demo retrieval-audience selector. `eval.py`, the tests and the RAG/application modules never read `APP_PASSWORD`.
+
+---
+
 ## 11. Logging
 
 **Implemented.**
@@ -240,7 +250,7 @@ The Dashboard is an **evaluation laboratory and presentation layer**: it exposes
   - is idempotent via a marker on its own handlers;
   - pins `boto3`, `botocore`, `urllib3` and `opensearch` to WARNING.
   It is called **only** from `eval.py main()`; importing any module never configures logging.
-- **Logger hierarchy** — every module uses `logging.getLogger(__name__)`: `eval`, `ask`, `retrieval`, `planner`, `reranker`, `client`, `config`, `ui.pages.*`. There is no custom hierarchy.
+- **Logger hierarchy** — every module uses `logging.getLogger(__name__)`: `eval`, `ask`, `retrieval`, `planner`, `reranker`, `client`, `config`, `ui.app_pages.*`. There is no custom hierarchy.
 - **Storage** —
   - `logs/eval.log` (gitignored; the path is relative to the working directory), written by CLI runs and by launcher subprocesses;
   - `runs/<id>.log`, the full stdout/stderr of a launcher run: the report plus WARNING+ log lines.

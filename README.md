@@ -64,8 +64,10 @@ Results are not published in this README; saved runs can be browsed in the dashb
 ## Dashboard
 
 ```bash
-streamlit run ui/app.py        # from the project root
+streamlit run ui/app.py        # from the project root; needs APP_PASSWORD (see below)
 ```
+
+The dashboard is behind a password: set `APP_PASSWORD` in your local `.env` (or in Streamlit secrets when deployed). If it is missing or blank, the dashboard refuses to start with a configuration error — there is no passwordless mode. `eval.py`, the tests and the RAG modules never need it.
 
 - **Chat**: ask a custom question as a demo role (employee/manager — not authentication), pick one of the five configurations and an optional cutoff date, optionally score with judges, and inspect the sources and the full pipeline trace.
 - **Evaluation runs**: configure an experiment — pick test cases from `data/eval_questions.jsonl` by id, one or more of the five configurations, and an optional cutoff — review the run summary and estimated model calls, confirm the cost, and launch it as a separate `eval.py` subprocess; browse saved runs. Each test case runs as its own dataset audience; there is no audience override and no access-filter control.
@@ -90,7 +92,7 @@ ask.py               One custom question through one configuration (used by the 
 runs.py              Saved run artifacts under runs/ and the eval.py subprocess launcher
 logging_setup.py     Centralized logging configuration (called only from eval.py main())
 manage.py            Collection status / teardown (control plane; typed confirmation)
-ui/                  Streamlit dashboard (app.py, pages/, components/)
+ui/                  Streamlit dashboard (app.py, app_pages/, components/, access.py)
 .streamlit/          Dashboard theme
 tests/               Unit tests — no network, all AWS calls mocked
 data/                The NovaOps corpus and the evaluation questions
@@ -153,6 +155,13 @@ Activate the environment and run the tests (they need no AWS access):
 source .venv/bin/activate     # Git Bash: source .venv/Scripts/activate   PowerShell: .venv\Scripts\Activate.ps1
 python -m unittest
 ```
+
+## Deployment (Streamlit Community Cloud)
+
+- Streamlit Community Cloud has no `.env`: supply the six required variables (and any optional ones) plus `APP_PASSWORD` as the app's **Secrets**, e.g. `AWS_REGION = "us-east-1"` in TOML.
+- `ui/app.py` bridges those secrets into the environment before `config.py` validates it, without overwriting values that are already set (precedence: shell environment > local `.env` > Streamlit secrets). `config.py` itself stays independent of Streamlit.
+- `APP_PASSWORD` protects the whole dashboard. It is a basic shared-password gate for a demo — not user authentication or authorization. The sidebar Employee/Manager role remains a demo retrieval-audience selector.
+- Never commit real credentials or passwords: `.env` and `.streamlit/secrets.toml` are git-ignored; `.env.example` holds placeholders only.
 
 ## Security
 

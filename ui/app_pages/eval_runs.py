@@ -19,7 +19,7 @@ else:
     st.caption("Select a finished run to open it. Experiment details appear once a run has saved its result.")
     if chosen is not None:
         if chosen.status == "done":
-            st.switch_page("pages/eval_run_detail.py", query_params={"run": chosen.id})
+            st.switch_page("app_pages/eval_run_detail.py", query_params={"run": chosen.id})
         elif chosen.status == "failed":
             st.warning(f"Run {chosen.id} did not finish. Last log lines:")
             st.code(runs.log_tail(chosen.id) or "(no log)", language=None)

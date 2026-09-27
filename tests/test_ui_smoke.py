@@ -11,6 +11,7 @@ from unittest.mock import patch
 for _name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "BEDROCK_MODEL_ID",
               "BEDROCK_EMBEDDING_MODEL_ID", "OPENSEARCH_COLLECTION"):
     os.environ.setdefault(_name, "test-value")
+os.environ.setdefault("APP_PASSWORD", "test-password")  # the UI refuses to run without one
 
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
@@ -18,6 +19,14 @@ import models  # noqa: E402
 import runs  # noqa: E402
 
 APP = str(Path(__file__).resolve().parent.parent / "ui" / "app.py")
+
+
+def _app():
+    """An AppTest of the dashboard, already signed in — the password gate itself
+    is tested in test_access.py."""
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state["authenticated"] = True
+    return at
 TIMEOUT = 30
 
 
@@ -82,7 +91,7 @@ class ChatPageTests(unittest.TestCase):
         self.addCleanup(patch.stopall)
 
     def test_chat_renders_answer_sources_trace_and_judges(self):
-        at = AppTest.from_file(APP, default_timeout=TIMEOUT).run()
+        at = _app().run()
         self.assertFalse(at.exception)
         at.chat_input[0].set_value("How does PTO accrue?").run()
         self.assertFalse(at.exception)
@@ -97,13 +106,13 @@ class ChatPageTests(unittest.TestCase):
         self.assertIn("**Completeness (vs. retrieved context)** 0.70", "\n".join(e.proto.text for e in at.get("progress")))
 
     def test_role_switch_is_passed_to_ask(self):
-        at = AppTest.from_file(APP, default_timeout=TIMEOUT).run()
+        at = _app().run()
         at.sidebar.radio(key="role").set_value("manager").run()
         at.chat_input[0].set_value("q").run()
         self.assertEqual(self.ask.call_args.args[2], "manager")
 
     def test_no_cutoff_by_default_and_chosen_cutoff_is_passed_to_ask(self):
-        at = AppTest.from_file(APP, default_timeout=TIMEOUT).run()
+        at = _app().run()
         at.chat_input[0].set_value("q").run()
         self.assertIsNone(self.ask.call_args.kwargs["cutoff"])
         at.date_input(key="chat_cutoff").set_value(date(2024, 1, 1)).run()
@@ -111,13 +120,17 @@ class ChatPageTests(unittest.TestCase):
         self.assertEqual(self.ask.call_args.kwargs["cutoff"], date(2024, 1, 1))
         self.assertEqual(self.ask.call_args.args[3], "filter + rerank dynamic")  # config unaffected by the cutoff
 
-    def test_pipeline_error_shows_type_only(self):
-        self.ask.side_effect = RuntimeError("secret internals")
-        at = AppTest.from_file(APP, default_timeout=TIMEOUT).run()
+    def test_pipeline_error_shows_a_safe_message_without_exception_details(self):
+        from botocore.exceptions import ClientError
+        self.ask.side_effect = ClientError(
+            {"Error": {"Code": "AccessDeniedException", "Message": "secret internals"}}, "Converse")
+        at = _app().run()
         at.chat_input[0].set_value("q").run()
         errors = "\n".join(e.value for e in at.error)
-        self.assertIn("RuntimeError", errors)
+        self.assertIn("Could not answer", errors)
         self.assertNotIn("secret internals", errors)
+        self.assertNotIn("ClientError", errors)          # no raw exception names in the UI
+        self.assertNotIn("AccessDenied", errors)
 
 
 class EvalPagesTests(unittest.TestCase):
@@ -132,15 +145,15 @@ class EvalPagesTests(unittest.TestCase):
         self.addCleanup(patch.stopall)
 
     def test_runs_page_lists_saved_run(self):
-        at = AppTest.from_file(APP, default_timeout=TIMEOUT).run()
-        at.switch_page("pages/eval_runs.py").run()
+        at = _app().run()
+        at.switch_page("app_pages/eval_runs.py").run()
         self.assertFalse(at.exception)
         df = at.dataframe[0].value
         self.assertIn("20260101T000000Z_eval_questions", list(df["Run"]))
 
     def _runs_page(self):
-        at = AppTest.from_file(APP, default_timeout=TIMEOUT).run()
-        at.switch_page("pages/eval_runs.py").run()
+        at = _app().run()
+        at.switch_page("app_pages/eval_runs.py").run()
         self.assertFalse(at.exception)
         return at
 
@@ -193,7 +206,8 @@ class EvalPagesTests(unittest.TestCase):
         controls = [w.label.lower() for w in (*at.checkbox, *at.radio, *at.toggle)
                     if not (w.key or "").startswith("q::")]  # question labels may name e.g. ACCESS_REVIEW
         self.assertFalse(any("access" in c and "understand" not in c for c in controls))
-        self.assertEqual([r.key for r in at.radio], [])  # no run-audience override on the page
+        # the only radio is the shared sidebar's Chat role — no run-audience override on the page
+        self.assertEqual([r.key for r in at.radio], ["role"])
         self.assertIn("audience comes from each test case", _texts(at).lower())
 
     def test_saved_runs_table_describes_the_experiment(self):
@@ -204,10 +218,10 @@ class EvalPagesTests(unittest.TestCase):
         self.assertEqual(row["Configurations"], len(models.CONFIG_NAMES))
 
     def test_run_detail_renders_summary_matrix_and_drilldown(self):
-        at = AppTest.from_file(APP, default_timeout=TIMEOUT)
+        at = _app()
         at.query_params["run"] = "20260101T000000Z_eval_questions"
         at.run()
-        at.switch_page("pages/eval_run_detail.py").run()
+        at.switch_page("app_pages/eval_run_detail.py").run()
         self.assertFalse(at.exception)
         self.assertGreaterEqual(len(at.dataframe), 2)  # summary + matrix
         self.assertEqual(len(at.tabs), len(models.CONFIG_NAMES))
@@ -222,10 +236,10 @@ class EvalPagesTests(unittest.TestCase):
             "summary": {n: RUN.summary[n] for n in ("baseline", "filter + rerank dynamic")},
         })
         (runs.RUNS_DIR / "20260102T000000Z_eval_questions.json").write_text(subset.model_dump_json(), encoding="utf-8")
-        at = AppTest.from_file(APP, default_timeout=TIMEOUT)
+        at = _app()
         at.query_params["run"] = "20260102T000000Z_eval_questions"
         at.run()
-        at.switch_page("pages/eval_run_detail.py").run()
+        at.switch_page("app_pages/eval_run_detail.py").run()
         self.assertFalse(at.exception)
         self.assertEqual([tab.label for tab in at.tabs], ["baseline", "filter + rerank dynamic"])
         self.assertEqual(list(at.dataframe[0].value["Configuration"]), ["baseline", "filter + rerank dynamic"])
@@ -279,16 +293,16 @@ class PresentationTests(unittest.TestCase):
         self.addCleanup(patch.stopall)
 
     def _chat_with_answer(self):
-        at = AppTest.from_file(APP, default_timeout=TIMEOUT).run()
+        at = _app().run()
         at.chat_input[0].set_value("How much severance?").run()
         self.assertFalse(at.exception)
         return at
 
     def _refusal_detail(self):
-        at = AppTest.from_file(APP, default_timeout=TIMEOUT)
+        at = _app()
         at.query_params["run"] = "20260103T000000Z_eval_questions"
         at.run()
-        at.switch_page("pages/eval_run_detail.py").run()
+        at.switch_page("app_pages/eval_run_detail.py").run()
         self.assertFalse(at.exception)
         return at
 
@@ -323,7 +337,7 @@ class PresentationTests(unittest.TestCase):
         self.assertEqual(list(matrix["Expected"]), ["refusal"])
 
     def test_clear_resets_only_the_chat_conversation(self):
-        at = AppTest.from_file(APP, default_timeout=TIMEOUT).run()
+        at = _app().run()
         self.assertTrue(at.button(key="clear_chat").disabled)      # nothing to clear yet
         at.chat_input[0].set_value("q1").run()
         self.assertEqual(len(at.session_state["history"]), 1)
@@ -351,8 +365,34 @@ class PresentationTests(unittest.TestCase):
         self.assertEqual(runs.list_runs(), [])
         self.assertIn("No runs yet", _texts(at))                            # back on the refreshed list
 
+    def test_run_detail_without_a_selected_run_shows_a_clear_empty_state(self):
+        at = _app().run()
+        at.switch_page("app_pages/eval_run_detail.py").run()
+        self.assertFalse(at.exception)
+        self.assertIn("No evaluation run selected", _texts(at))
+        self.assertIn("Open an evaluation run from the Runs page to view its details.", _texts(at))
+
+    def test_links_in_the_answer_question_and_judge_reasons_are_not_clickable_but_sources_stay_raw(self):
+        linked = "Unpaid leave may apply; see [state and family leave](stateFMLA.md)."
+        self.ask.return_value = HEADING_RESULT.model_copy(update={
+            "question": "Check [this](https://example.com) please",  # echoed from history after the answer
+            "answer": linked,
+            "judgement": ASK_RESULT.judgement.model_copy(
+                update={"faithfulness_reason": "Cites [the doc](http://localhost:8501/stateFMLA.md)."}),
+        })
+        at = _app().run()
+        at.chat_input[0].set_value("Check [this](https://example.com) please").run()
+        self.assertFalse(at.exception)
+        rendered = "\n".join(m.value for m in at.main.markdown) + "\n" + "\n".join(c.value for c in at.main.caption)
+        self.assertIn("see state and family leave.", rendered)
+        self.assertIn("Check this please", rendered)
+        self.assertIn("Cites the doc.", rendered)
+        self.assertNotIn("](", rendered)                                  # no Markdown link survives
+        self.assertNotIn("stateFMLA.md)", rendered)
+        self.assertEqual(at.session_state["history"][0].answer, linked)  # the stored answer is unchanged
+
     def test_help_is_available_in_the_sidebar(self):
-        at = AppTest.from_file(APP, default_timeout=TIMEOUT).run()
+        at = _app().run()
         help_box = next(e for e in at.sidebar.expander if e.label == "Help")
         text = "\n".join(m.value for m in help_box.markdown)
         for term in ("Chat", "Evaluation runs", "baseline", "cutoff", "Score with judges", "Refusal OK",

@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+# Streamlit secrets (local copy of deployment secrets); .streamlit/config.toml stays tracked
+.streamlit/secrets.toml
 
 # Virtual environments
 .venv/

@@ -29,7 +29,10 @@ Current architecture: `docs/architecture.md` (wins over the older design records
   subprocess, one at a time per server process; `delete_run(id)` removes one run's .json/.log (listed ids only).
 - `logging_setup.py` — centralized logging; `configure_logging()` is called only from `eval.py main()`.
 - `manage.py` — `status` / `down` (typed REMOVE); the only exception: OpenSearch control-plane client.
-- `ui/` — Streamlit dashboard: `streamlit run ui/app.py` from the project root. Pages: Chat (demo role switcher,
+- `ui/access.py` — UI-only deployment boundary: Streamlit secrets → os.environ bridge (never overwrites;
+  shell > .env > secrets) and the mandatory `APP_PASSWORD` gate (fail-closed, hmac.compare_digest,
+  session_state). CLI/eval/tests/RAG never need APP_PASSWORD.
+- `ui/` — Streamlit dashboard (pages in `ui/app_pages/`, never `ui/pages/`): `streamlit run ui/app.py` from the project root. Pages: Chat (demo role switcher,
   config, optional cutoff date, optional judges, sources + full pipeline trace), Evaluation runs (launcher +
   saved runs), Run detail (summary, questions × configs matrix, per-config drill-down).
 
@@ -47,11 +50,12 @@ Current architecture: `docs/architecture.md` (wins over the older design records
 - No global audience override for eval runs; no access-filter control anywhere. No best/winner highlighting.
 - Logs never contain prompts, answers, chunk text, key_facts, or secrets.
 - Do not delete / recreate / reindex the `novaops-kb` index without an explicit request.
-- `.env` is not committed; the PAT from the original README is never reproduced anywhere.
+- `.env` and `.streamlit/secrets.toml` are not committed; the PAT from the original README is never reproduced anywhere.
+- The dashboard never runs without `APP_PASSWORD` (local `.env` or Cloud secrets); it is demo protection only.
 
 ## Done
 - All modules above implemented; eval.py and the dashboard run against the live collection.
-- Tests: 318, `.venv\Scripts\python.exe -m unittest discover -s tests` (everything mocked, no network;
+- Tests: 363, `.venv\Scripts\python.exe -m unittest discover -s tests` (everything mocked, no network;
   system Python lacks opensearch-py). Logging tests assert the WARNING/WARNING defaults.
 - Last commit: `0e70db3 handoff - 1`. The UI layer, the cutoff and the doc updates are NOT committed yet.
 

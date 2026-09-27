@@ -7,11 +7,12 @@ only — never as Refusal OK). Nothing here computes a score."""
 import streamlit as st
 
 from models import ContentEvaluation, LiveJudgement, RefusalEvaluation
+from ui.components.safe_markdown import neutralize_links
 
 
 def _score(label: str, score: float, reason: str) -> None:
     st.progress(min(max(score, 0.0), 1.0), text=f"**{label}** {score:.2f}")
-    st.caption(reason)
+    st.caption(neutralize_links(reason))  # judge reasons can quote links
 
 
 def _not_run(label: str, why: str) -> None:

@@ -7,15 +7,19 @@ message; the chat input is pinned to the bottom by Streamlit."""
 import logging
 
 import streamlit as st
+from botocore.exceptions import BotoCoreError, ClientError
+from opensearchpy.exceptions import OpenSearchException
 
 import ask
 from models import CONFIG_NAMES, AskResult
 from ui.components import answer_card, judge_panel, sources, trace
+from ui.components.safe_markdown import neutralize_links
 from ui.state import get_client
 
 logger = logging.getLogger(__name__)
 
 CONVERSATION_HEIGHT = 560
+SERVICE_ERRORS = (BotoCoreError, ClientError, OpenSearchException)
 
 history: list[AskResult] = st.session_state.setdefault("history", [])
 
@@ -55,22 +59,23 @@ with conversation:
                    "as the role selected in the sidebar.")
     for past in history:
         with st.chat_message("user"):
-            st.markdown(past.question)
+            st.markdown(neutralize_links(past.question))
         with st.chat_message("assistant"):
             render_result(past)
 
 if question := st.chat_input("Ask about time off, benefits, severance, managing your team…"):
     with conversation:
         with st.chat_message("user"):
-            st.markdown(question)
+            st.markdown(neutralize_links(question))
         with st.chat_message("assistant"):
             try:
                 with st.spinner("Searching and answering…"):
                     result = ask.ask(get_client(), question, st.session_state["role"], config,
                                      judge=judge, cutoff=cutoff)
-            except Exception as e:
-                logger.exception("chat ask failed config=%s", config)
-                st.error(f"Could not answer ({type(e).__name__}). Details are in the server log.")
+            except SERVICE_ERRORS:  # Bedrock / OpenSearch / network failures — not programming errors
+                logger.exception("chat ask failed config=%s", config)  # details stay in the server log
+                st.error("Could not answer this question: the model or search service failed. "
+                         "Details are in the server log.", icon=":material/error:")
             else:
                 history.append(result)
                 st.rerun()  # redraw from history so the Clear button and empty state reflect it
