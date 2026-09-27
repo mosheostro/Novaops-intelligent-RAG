@@ -116,8 +116,14 @@ class SelectionResult(_Frozen):
     string retrieval.answer() needs, unchanged, to produce its existing
     grounded-refusal behavior. Domain truth (`chunks`) and prompt presentation
     (`context_texts`) are deliberately two different fields: counting chunks
-    means `len(chunks)`, never `len(context_texts)`."""
-    status: Literal["selected", "not_found"]
+    means `len(chunks)`, never `len(context_texts)`.
+
+    `status == "access_violation"` means no retrieval ran at all: the case's
+    role is not a supported audience, so the request was rejected before any
+    model or OpenSearch call (`chunks == []`, `context_texts == []`). It is
+    distinct from "not_found", where the role was authorized but nothing
+    relevant enough was found."""
+    status: Literal["selected", "not_found", "access_violation"]
     chunks: list[SelectedChunk]
     context_texts: list[str]
 
@@ -142,9 +148,19 @@ class RefusalEvaluation(_Frozen):
     refusal_ok: bool
 
 
+class AccessViolationEvaluation(_Frozen):
+    """The case's role is not a supported audience, so the request was rejected
+    (fail closed) before retrieval. Nothing was judged: this is an access
+    outcome, not a quality score, and it is counted apart from both the judge
+    averages and SecurityAudit leaks (see ConfigSummary.access_violations)."""
+    kind: Literal["access_violation"] = "access_violation"
+
+
 # Which variant a ConfigurationResult gets is fully determined by the
-# question's expect_refusal flag, never mixed within one question's configs.
-Evaluation = Annotated[Union[ContentEvaluation, RefusalEvaluation], Field(discriminator="kind")]
+# question's role and expect_refusal flag, never mixed within one question's configs.
+Evaluation = Annotated[
+    Union[ContentEvaluation, RefusalEvaluation, AccessViolationEvaluation], Field(discriminator="kind"),
+]
 
 
 class ConfigurationResult(_Frozen):
@@ -199,6 +215,10 @@ class ConfigSummary(_Frozen):
     completeness_avg: float | None
     refusal_ok_avg: float | None
     security_violations: int
+    # Cases rejected because their role is not a supported audience — the
+    # boundary HELD. Kept apart from security_violations (a leak: the boundary
+    # FAILED) and from every average. Defaults to 0 so older saved runs load.
+    access_violations: int = 0
 
 
 class EvaluationResult(_Frozen):

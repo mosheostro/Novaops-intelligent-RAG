@@ -406,5 +406,43 @@ class PresentationTests(unittest.TestCase):
             self.assertIn(term, text)
 
 
+class AccessViolationRunTests(unittest.TestCase):
+    """A saved run with a case whose role is not supported: shown as a neutral
+    access-denied outcome — not the red leak banner, not judge scores."""
+
+    def setUp(self):
+        import eval as ev
+        hr = ev.access_violation_result(
+            {"id": "INVALID_ROLE", "question": "What is the severance policy?", "audience": "HR",
+             "expect_refusal": True, "key_facts": []}, ["baseline", "filter + rerank dynamic"])
+        questions = {"INVALID_ROLE": hr}
+        run = models.EvaluationResult(
+            metadata=RUN.metadata.model_copy(update={"configs": ["baseline", "filter + rerank dynamic"]}),
+            questions=questions, summary=ev.summarize(questions, ["baseline", "filter + rerank dynamic"]),
+        )
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        (Path(tmp.name) / "20260104T000000Z_access.json").write_text(run.model_dump_json(), encoding="utf-8")
+        patch.object(runs, "RUNS_DIR", Path(tmp.name)).start()
+        patch("ui.state.opensearch_client", return_value=object()).start()
+        self.addCleanup(patch.stopall)
+
+    def test_run_detail_shows_access_denied_not_a_leak_or_scores(self):
+        at = _app()
+        at.query_params["run"] = "20260104T000000Z_access"
+        at.run()
+        at.switch_page("app_pages/eval_run_detail.py").run()
+        self.assertFalse(at.exception)
+        text = _texts(at)
+        self.assertIn("access denied", text)
+        self.assertIn("Not judged", text)
+        self.assertIn("Your current role is not supported by this system", text)
+        self.assertNotIn("security violation", text.lower().replace("security violations", ""))
+        self.assertEqual([e.value for e in at.error], [])     # no red leak banner
+        summary = at.dataframe[0].value
+        self.assertEqual(list(summary["Access violations"]), [1, 1])
+        self.assertEqual(list(summary["Security violations"]), [0, 0])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -50,6 +50,13 @@ chunks, while context_texts stays the literal ["not found"] retrieval.answer()
 needs for its existing "say so plainly" behavior — nothing here special-cases
 the answer step further.
 
+The one intentional catch is UnsupportedAudienceError, checked per question
+BEFORE any call: a test case whose role is not a supported audience is a
+deliberate access-boundary test, not a crashed run. retrieval.access_filter
+still fails closed; the case is recorded, for every selected config, as an
+"access_violation" with the deterministic ACCESS_DENIED_ANSWER — no planner,
+embedding, OpenSearch, answer or judge call — and the run moves on.
+
     python eval.py
 """
 import argparse
@@ -65,6 +72,7 @@ from judges import completeness, context_relevance, faithfulness, refusal
 from logging_setup import configure_logging
 from models import (
     CONFIG_NAMES,
+    AccessViolationEvaluation,
     Candidate,
     ConfigName,
     ConfigSummary,
@@ -82,7 +90,7 @@ from models import (
 )
 from planner import plan_subjects
 from reranker import rerank_all
-from retrieval import answer, knn_search
+from retrieval import SUPPORTED_AUDIENCES, UnsupportedAudienceError, access_filter, answer, knn_search
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +98,9 @@ BASELINE_TOP_K = 4        # baseline / filter-only: plain vector context size
 CANDIDATE_POOL_SIZE = 10  # rerank configs: candidates retrieved BEFORE reranking
 RERANK_STATIC_TOP_K = 3   # rerank configs: fixed-count cut after reranking
 MIN_RERANK_SCORE = 0.6    # dynamic cut: keep every candidate at or above this
+
+# Deterministic, no model call: what an evaluation case with an unsupported role gets.
+ACCESS_DENIED_ANSWER = "Your current role is not supported by this system, so we cannot provide an answer."
 
 MAX_REPORT_ANSWER_CHARS = 600  # presentation only -- ConfigurationResult.answer is never shortened
 
@@ -124,14 +135,17 @@ def estimate_calls(questions: list[dict], configs: Sequence[str]) -> int:
     mirroring evaluate_question()'s sharing rules: planner at most once per
     question, one query embedding per distinct retrieval pool, one rerank per
     reranked pool (static + dynamic share one), one answer per config, then 3
-    content judges per config — or 1 refusal judge for expect_refusal cases."""
+    content judges per config — or 1 refusal judge for expect_refusal cases.
+    A case whose role is not a supported audience costs nothing: it is
+    rejected before any call."""
     selected = set(resolve_configs(configs))
     planner = 1 if selected & PLANNED_CONFIGS else 0
     shared = 1 if selected & set(SHARED_RERANK_CONFIGS) else 0
     pools = len(selected & {"baseline", "filter-only", "rerank-only"}) + shared
     reranks = (1 if "rerank-only" in selected else 0) + shared
     per_question = planner + pools + reranks + len(selected)
-    return sum(per_question + len(selected) * (1 if q["expect_refusal"] else 3) for q in questions)
+    return sum(per_question + len(selected) * (1 if q["expect_refusal"] else 3)
+               for q in questions if q["audience"] in SUPPORTED_AUDIENCES)
 
 
 # --- candidates: OpenSearch hits -> domain objects -------------------------------
@@ -356,6 +370,25 @@ def resolve_configs(configs: Sequence[str]) -> list[ConfigName]:
     return [name for name in CONFIG_NAMES if name in configs]
 
 
+def access_violation_result(q: dict, selected: Sequence[ConfigName]) -> QuestionResult:
+    """The recorded outcome for a case whose role is not a supported audience:
+    every selected config gets the same rejected request — no candidates, no
+    selection, the deterministic refusal, no judge. Built without any call."""
+    retrieval = RetrievalResult(
+        audience=q["audience"], subjects_applied=None, top_k_requested=0, candidates=[],
+        security=SecurityAudit(violation=False, violating_sources=[]),  # nothing retrieved, nothing leaked
+    )
+    selection = SelectionResult(status="access_violation", chunks=[], context_texts=[])
+    return QuestionResult(
+        id=q["id"], question=q["question"], audience=q["audience"], expect_refusal=q["expect_refusal"],
+        key_facts=q["key_facts"], planned_subjects=None,
+        configurations={name: ConfigurationResult(
+            name=name, retrieval=retrieval, selection=selection, answer=ACCESS_DENIED_ANSWER,
+            evaluation=AccessViolationEvaluation(),
+        ) for name in selected},
+    )
+
+
 def evaluate_question(
     client, q: dict, configs: Sequence[str] = CONFIG_NAMES, cutoff: date | None = None,
 ) -> QuestionResult:
@@ -365,9 +398,18 @@ def evaluate_question(
     once; the filter+rerank pool is retrieved and reranked once and its single
     RetrievalResult is reused, by reference, for whichever of the static and
     dynamic cuts are selected. `cutoff` (last_updated >= cutoff) applies to
-    every retrieval; the access filter always comes from q["audience"]."""
+    every retrieval; the access filter always comes from q["audience"].
+
+    The role is checked first, exactly as knn_search will check it: an
+    unsupported one is recorded as an access violation before the planner or
+    any other call runs (see access_violation_result)."""
     selected = resolve_configs(configs)
     role, question = q["audience"], q["question"]
+    try:
+        access_filter(role)
+    except UnsupportedAudienceError:
+        logger.warning("question=%s access violation: unsupported audience=%r; no retrieval ran", q["id"], role)
+        return access_violation_result(q, selected)
     updated_after = cutoff.isoformat() if cutoff else None
     logger.info("question=%s started audience=%s configs=%d", q["id"], role, len(selected))
     planned_subjects = plan_subjects(question) if PLANNED_CONFIGS & set(selected) else None  # ONE call, reused
@@ -435,13 +477,18 @@ def summarize(
     scores from non-refusal questions, so an all-refusal question set would
     correctly report those averages as None rather than a misleading 0.0.
     n_chunks reads ConfigurationResult.n_chunks — the computed property — so a
-    "not_found" dynamic result correctly contributes 0, not len(["not found"])."""
+    "not_found" dynamic result correctly contributes 0, not len(["not found"]).
+    An access-violation case adds only to access_violations: no retrieval ran,
+    so it contributes no chunk count, score or refusal_ok."""
     summary: dict[ConfigName, ConfigSummary] = {}
     for name in configs:
         n_chunks, faith, ctx_rel, complete, refusal_ok = [], [], [], [], []
-        violations = 0
+        violations = access_violations = 0
         for q_result in per_question.values():
             cfg = q_result.configurations[name]
+            if isinstance(cfg.evaluation, AccessViolationEvaluation):
+                access_violations += 1
+                continue
             n_chunks.append(cfg.n_chunks)
             if isinstance(cfg.evaluation, RefusalEvaluation):
                 refusal_ok.append(1.0 if cfg.evaluation.refusal_ok else 0.0)
@@ -458,6 +505,7 @@ def summarize(
             completeness_avg=mean(complete),
             refusal_ok_avg=mean(refusal_ok),
             security_violations=violations,
+            access_violations=access_violations,
         )
     return summary
 
@@ -525,7 +573,9 @@ def _print_configuration_detail(cfg: ConfigurationResult) -> None:
                           if sc.candidate.rerank_score is not None else "")
             print(f"  [{sc.final_rank}] {sc.candidate.source}{score_part}")
     print("Judge:")
-    if isinstance(cfg.evaluation, RefusalEvaluation):
+    if isinstance(cfg.evaluation, AccessViolationEvaluation):
+        print(f"  not judged: access violation — unsupported role {cfg.retrieval.audience!r}")
+    elif isinstance(cfg.evaluation, RefusalEvaluation):
         print(f"  refusal_ok={cfg.evaluation.refusal_ok}")
     else:
         print(f"  faithfulness={cfg.evaluation.faithfulness:.2f}  "
@@ -572,19 +622,21 @@ def report(results: EvaluationResult, questions: list[dict] | None = None) -> No
     print(f"candidate pool N={meta.candidate_pool_size}  static top-k={meta.static_top_k}  "
           f"dynamic threshold={meta.dynamic_threshold}  baseline top-k={meta.baseline_top_k}  "
           f"cutoff={meta.cutoff.isoformat() if meta.cutoff else 'none'}")
-    header = f"{'config':26} {'chunks':>7} {'faithful':>9} {'ctx_rel':>9} {'complete':>9} {'refuse_ok':>10} {'sec_viol':>9}"
+    header = f"{'config':26} {'chunks':>7} {'faithful':>9} {'ctx_rel':>9} {'complete':>9} {'refuse_ok':>10} {'sec_viol':>9} {'access_viol':>12}"
     print(header)
     print("-" * len(header))
     for name in meta.configs:
         s = results.summary[name]
         print(f"{name:26} {_fmt(s.n_chunks_avg, '.1f'):>7} {_fmt(s.faithfulness_avg):>9} "
               f"{_fmt(s.context_relevance_avg):>9} {_fmt(s.completeness_avg):>9} "
-              f"{_fmt(s.refusal_ok_avg):>10} {s.security_violations:>9}")
+              f"{_fmt(s.refusal_ok_avg):>10} {s.security_violations:>9} {s.access_violations:>12}")
     print("\n'chunks' is the AVERAGE final context size each config fed the model — fixed at 4 for")
     print("baseline/filter-only and 3 for the static rerank configs, but VARIABLE for the dynamic")
     print("cut (candidate POOL size is fixed at N; final context size is what varies). 'sec_viol'")
     print("counts questions where an employee's retrieval returned a manager-only chunk — this")
     print("must read 0 for every config; a nonzero value is a retrieval bug, not a quality result.")
+    print("'access_viol' counts test cases whose role is not a supported audience: rejected before")
+    print("retrieval (fail closed) and excluded from every average — the boundary held.")
 
     if questions:
         _print_selected_report(results, questions)

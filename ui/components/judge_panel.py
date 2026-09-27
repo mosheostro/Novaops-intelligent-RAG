@@ -3,10 +3,12 @@ judges ran. The evaluation type already encodes the case: RefusalEvaluation =
 expected refusal (only the refusal judge ran), ContentEvaluation = expected
 answer (only the content judges ran), LiveJudgement = custom Chat question
 (no expectation, so the refusal judge's verdict is shown as detected behavior
-only — never as Refusal OK). Nothing here computes a score."""
+only — never as Refusal OK), AccessViolationEvaluation = the case's role is
+not supported, so the request was rejected and nothing was judged. Nothing
+here computes a score."""
 import streamlit as st
 
-from models import ContentEvaluation, LiveJudgement, RefusalEvaluation
+from models import AccessViolationEvaluation, ContentEvaluation, LiveJudgement, RefusalEvaluation
 from ui.components.safe_markdown import neutralize_links
 
 
@@ -20,7 +22,12 @@ def _not_run(label: str, why: str) -> None:
     st.caption(why)
 
 
-def render(evaluation: ContentEvaluation | RefusalEvaluation | LiveJudgement) -> None:
+def render(evaluation: ContentEvaluation | RefusalEvaluation | AccessViolationEvaluation | LiveJudgement) -> None:
+    if isinstance(evaluation, AccessViolationEvaluation):
+        st.markdown(":gray-badge[Not judged — access violation]")
+        st.caption("The role is not a supported audience: the request was rejected before retrieval, "
+                   "so no judge ran and nothing counts toward the score averages.")
+        return
     if isinstance(evaluation, RefusalEvaluation):
         actual = (":green-badge[:material/block: refused]" if evaluation.refusal_ok
                   else ":red-badge[:material/chat: did not refuse]")

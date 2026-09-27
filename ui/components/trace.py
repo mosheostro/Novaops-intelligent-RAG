@@ -7,6 +7,10 @@ from models import RetrievalResult, SelectionResult
 
 
 def render(config: str, retrieval: RetrievalResult, selection: SelectionResult) -> None:
+    if selection.status == "access_violation":
+        st.markdown("**No retrieval:** the role is not a supported audience, so the request was rejected "
+                    "before planning, search or reranking.")
+        return
     subjects = retrieval.subjects_applied
     if subjects is None:
         st.markdown("**Subject filter:** not used by this configuration")

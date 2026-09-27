@@ -15,6 +15,7 @@ def render(summary: dict[ConfigName, ConfigSummary]) -> None:
         "Completeness": s.completeness_avg,
         "Refusal OK": s.refusal_ok_avg,
         "Security violations": s.security_violations,
+        "Access violations": s.access_violations,
     } for name, s in summary.items()])
     violations = int(df["Security violations"].sum()) if not df.empty else 0
     if violations:
@@ -27,4 +28,6 @@ def render(summary: dict[ConfigName, ConfigSummary]) -> None:
         "Faithfulness": score, "Context relevance": score, "Completeness": score, "Refusal OK": score,
     })
     st.caption("Averages over the questions in this run. Refusal OK averages only the refusal cases; "
-               "the other scores only the answerable ones. Empty = no question of that kind.")
+               "the other scores only the answerable ones. Empty = no question of that kind. "
+               "Access violations = cases whose role is not supported, rejected before retrieval "
+               "and excluded from every average.")
