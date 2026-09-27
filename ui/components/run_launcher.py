@@ -44,7 +44,7 @@ def _set_questions(questions: list[dict], keep) -> None:
 def render() -> None:
     questions = load_questions()
 
-    st.markdown("**Questions** · `data/eval_questions.jsonl`")
+    st.markdown(f"**Evaluation dataset** · {len(questions)} canonical questions")
     st.caption("The audience comes from each test case: its expected result is defined for that role.")
     quick = st.columns(4)
     quick[0].button("All", on_click=_set_questions, args=(questions, lambda q: True))

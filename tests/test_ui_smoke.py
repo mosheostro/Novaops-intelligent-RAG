@@ -157,6 +157,12 @@ class EvalPagesTests(unittest.TestCase):
         self.assertFalse(at.exception)
         return at
 
+    def test_launcher_names_the_dataset_without_exposing_its_file_path(self):
+        from eval import load_questions
+        text = "\n".join(m.value for m in self._runs_page().main.markdown)
+        self.assertIn(f"**Evaluation dataset** · {len(load_questions())} canonical questions", text)
+        self.assertNotIn("eval_questions.jsonl", text)
+
     def test_run_needs_a_question_a_configuration_and_cost_confirmation(self):
         at = self._runs_page()
         self.assertTrue(at.button(key="launch_run").disabled)            # nothing selected yet

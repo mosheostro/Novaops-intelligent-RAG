@@ -56,7 +56,7 @@ Current architecture: `docs/architecture.md` (wins over the older design records
 
 ## Done
 - All modules above implemented; eval.py and the dashboard run against the live collection.
-- Tests: 371, `.venv\Scripts\python.exe -m unittest discover -s tests` (everything mocked, no network;
+- Tests: 372, `.venv\Scripts\python.exe -m unittest discover -s tests` (everything mocked, no network;
   system Python lacks opensearch-py). Logging tests assert the WARNING/WARNING defaults.
 - Last commit: `0e70db3 handoff - 1`. The UI layer, the cutoff and the doc updates are NOT committed yet.
 
