@@ -34,7 +34,8 @@ Current architecture: `docs/architecture.md` (wins over the older design records
   session_state). CLI/eval/tests/RAG never need APP_PASSWORD.
 - `ui/` — Streamlit dashboard (pages in `ui/app_pages/`, never `ui/pages/`): `streamlit run ui/app.py` from the project root. Pages: Chat (demo role switcher,
   config, optional cutoff date, optional judges, sources + full pipeline trace), Evaluation runs (launcher +
-  saved runs), Run detail (summary, questions × configs matrix, per-config drill-down).
+  saved runs), Run detail (summary, questions × configs matrix, per-config drill-down), About / Architecture
+  (read-only visual summary of docs/project-overview.md; static, no backend calls).
 
 ## Decisions
 - Bedrock boundary: no other module creates `boto3.client("bedrock-runtime")`.
@@ -55,7 +56,7 @@ Current architecture: `docs/architecture.md` (wins over the older design records
 
 ## Done
 - All modules above implemented; eval.py and the dashboard run against the live collection.
-- Tests: 363, `.venv\Scripts\python.exe -m unittest discover -s tests` (everything mocked, no network;
+- Tests: 371, `.venv\Scripts\python.exe -m unittest discover -s tests` (everything mocked, no network;
   system Python lacks opensearch-py). Logging tests assert the WARNING/WARNING defaults.
 - Last commit: `0e70db3 handoff - 1`. The UI layer, the cutoff and the doc updates are NOT committed yet.
 
