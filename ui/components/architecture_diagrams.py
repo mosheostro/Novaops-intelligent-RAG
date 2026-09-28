@@ -22,12 +22,14 @@ _STYLES = """
 """
 
 
-def _diagram(body: str) -> str:
+def styled_diagram(body: str) -> str:
+    """Wrap a Mermaid flowchart with the shared theme and classDefs — also used
+    by infrastructure_diagrams, so both pages keep one visual language."""
     return _INIT + body + _STYLES
 
 
 # Layered top to bottom: clients → application boundary → core / evaluation → services.
-ARCHITECTURE = _diagram("""flowchart TB
+ARCHITECTURE = styled_diagram("""flowchart TB
     user(["User"])
     ui["Streamlit UI<br/>Chat · Evaluation runs · About"]
     cli["Evaluation CLI"]
@@ -57,7 +59,7 @@ ARCHITECTURE = _diagram("""flowchart TB
 """)
 
 # Two lanes linked subgraph-to-subgraph, so each lane keeps its left-to-right direction.
-PIPELINE = _diagram(f"""flowchart TB
+PIPELINE = styled_diagram(f"""flowchart TB
     subgraph retrieve["1 · Authorize and retrieve"]
         direction LR
         question(["Question + role"]) --> access{{"Access / role"}}
@@ -80,7 +82,7 @@ PIPELINE = _diagram(f"""flowchart TB
     class question,answer client
 """)
 
-SECURITY = _diagram("""flowchart LR
+SECURITY = styled_diagram("""flowchart LR
     role(["Caller role"]) --> policy{"Access policy"}
     policy -->|employee| employee["Company-wide content only"]
     policy -->|manager| manager["Whole corpus"]
@@ -109,7 +111,7 @@ _CONFIG_IDS = ",".join(f"c{i}" for i in range(1, len(CONFIG_NAMES) + 1))
 _CONFIG_ROW = " ~~~ ".join(f"c{i}" for i in range(1, len(CONFIG_NAMES) + 1))  # invisible links keep one row
 
 # Top-to-bottom bands linked only subgraph-to-subgraph, so each band keeps its own LR direction.
-EVALUATION = _diagram(f"""flowchart TB
+EVALUATION = styled_diagram(f"""flowchart TB
     subgraph inputs["Experiment"]
         direction LR
         dataset[("Evaluation dataset<br/>question + role + expectation")] --> experiment["Selected cases<br/>× selected configurations"]
@@ -135,7 +137,7 @@ EVALUATION = _diagram(f"""flowchart TB
     class violations security
 """)
 
-STREAMLIT = _diagram("""flowchart TB
+STREAMLIT = styled_diagram("""flowchart TB
     streamlit["Streamlit UI<br/>thin presentation layer"] --> boundary["Application boundary"]
     cli["Evaluation CLI<br/>no Streamlit"] --> boundary
     boundary --> ragcore["RAG core<br/>no UI dependency"]
@@ -144,7 +146,7 @@ STREAMLIT = _diagram("""flowchart TB
     class ragcore core
 """)
 
-EXTENSIONS = _diagram("""flowchart TB
+EXTENSIONS = styled_diagram("""flowchart TB
     streamlit["Streamlit UI<br/>implemented"]
     api["HTTP API<br/>future extension point"]
     mcp["MCP server / tools<br/>planned"]
