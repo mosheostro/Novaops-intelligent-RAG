@@ -33,7 +33,8 @@ ARCHITECTURE = styled_diagram("""flowchart TB
     user(["User"])
     ui["Streamlit UI<br/>Chat · Evaluation runs · About"]
     cli["Evaluation CLI"]
-    future["HTTP API · MCP<br/>future clients"]
+    mcpsrv["MCP server<br/>STDIO · Stage 1"]
+    future["HTTP API<br/>future client"]
     boundary["Application boundary<br/>ask one question · run an experiment · saved runs"]
     ragcore["RAG core<br/>access · planning · filtering · retrieval<br/>reranking · selection · answer"]
     evaluation["Evaluation<br/>LLM judges · saved run artifacts"]
@@ -42,6 +43,7 @@ ARCHITECTURE = styled_diagram("""flowchart TB
     user --> ui
     ui --> boundary
     cli --> boundary
+    mcpsrv --> boundary
     future -.->|not implemented| boundary
     boundary --> ragcore
     boundary -->|evaluation path| evaluation
@@ -49,7 +51,7 @@ ARCHITECTURE = styled_diagram("""flowchart TB
     ragcore --> search
     ragcore --> bedrock
     evaluation --> bedrock
-    class ui,cli client
+    class ui,cli,mcpsrv client
     class boundary app
     class ragcore core
     class evaluation quality
@@ -149,14 +151,14 @@ STREAMLIT = styled_diagram("""flowchart TB
 EXTENSIONS = styled_diagram("""flowchart TB
     streamlit["Streamlit UI<br/>implemented"]
     api["HTTP API<br/>future extension point"]
-    mcp["MCP server / tools<br/>planned"]
+    mcp["MCP server / tools<br/>implemented · Stage 1 · STDIO"]
     streamlit --> boundary["Application boundary"]
     api -.-> boundary
-    mcp -.-> boundary
+    mcp --> boundary
     boundary --> ragcore["RAG core + shared domain models"]
     ragcore --> services[("OpenSearch Serverless + Amazon Bedrock")]
-    class streamlit client
-    class api,mcp future
+    class streamlit,mcp client
+    class api future
     class boundary app
     class ragcore core
     class services ext

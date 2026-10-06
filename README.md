@@ -2,7 +2,7 @@
 
 A filtered and reranked retrieval-augmented generation (RAG) pipeline over the NovaOps knowledge base, built on Amazon Bedrock and Amazon OpenSearch Serverless. It combines semantic vector retrieval, a hard audience/access boundary, soft subject-based metadata filtering, listwise reranking with a language model, adaptive context selection and grounded answer generation. An evaluation harness measures each mechanism on its own and in combination, so the effect of every stage is visible rather than assumed.
 
-> **Status: implemented.** The retrieval pipeline, the five-configuration evaluation harness (with saved run artifacts) and a Streamlit dashboard (chat + evaluation laboratory) run against the live collection. The current architecture is documented in [`docs/architecture.md`](docs/architecture.md); an HTTP API and an MCP tool layer are future consumers, not implemented.
+> **Status: implemented.** The retrieval pipeline, the five-configuration evaluation harness (with saved run artifacts) and a Streamlit dashboard (chat + evaluation laboratory) run against the live collection. An MCP server (Stage 1: STDIO transport, three tools and one resource) and a minimal MCP client expose the same question-answering use case to MCP clients — see [MCP server (Stage 1)](#mcp-server-stage-1). The current architecture is documented in [`docs/architecture.md`](docs/architecture.md); an HTTP API is a future consumer, not implemented.
 
 ## Architecture
 
@@ -91,13 +91,17 @@ eval.py              Evaluation harness; CLI --ids/--config/--cutoff/--save/--ru
 ask.py               One custom question through one configuration (used by the dashboard)
 runs.py              Saved run artifacts under runs/ and the eval.py subprocess launcher
 logging_setup.py     Centralized logging configuration (called only from eval.py main())
-manage.py            Collection status / teardown (control plane; typed confirmation)
+manage.py            Collection status / teardown (control plane; typed confirmation); collection_health()
+mcp_server.py        MCP server (STDIO): ask_rag, health_check, get_rag_capabilities, rag://subjects
+mcp_client.py        Minimal MCP client: starts the server over STDIO and exercises its surface
+failures.py          Transport-independent failure categories used by the MCP server
 ui/                  Streamlit dashboard (app.py, app_pages/, components/, access.py)
 .streamlit/          Dashboard theme
 tests/               Unit tests — no network, all AWS calls mocked
 data/                The NovaOps corpus and the evaluation questions
 docs/                Architecture and design decisions
 requirements.txt     Python dependencies
+requirements-mcp.txt Optional MCP dependency (the SDK); kept out of the dashboard deployment
 .env.example         Configuration template (placeholders only)
 setup.sh, setup.ps1  Bootstrap scripts (virtual environment, dependencies, .env check)
 CLAUDE.md            Working conventions for AI-assisted development
@@ -156,9 +160,38 @@ source .venv/bin/activate     # Git Bash: source .venv/Scripts/activate   PowerS
 python -m unittest
 ```
 
+The MCP tests need the optional dependency (`pip install -r requirements-mcp.txt`); without it they are skipped with that instruction, and the MCP dependency-boundary tests still run.
+
+## MCP server (Stage 1)
+
+`mcp_server.py` exposes the knowledge base to MCP clients (MCP Inspector, Claude Code, other agent environments). It is a thin adapter: it calls the same `ask.ask()` use case as the dashboard and the read-only `manage.collection_health()`; retrieval, access control, reranking and judging stay in the core, which never imports the MCP SDK.
+
+```bash
+pip install -r requirements-mcp.txt                 # optional dependency: the MCP SDK (mcp>=2.3,<3)
+python mcp_server.py --role employee                # or: python -m mcp_server --role manager
+python mcp_client.py --role employee --question "What benefits are available to employees?"
+```
+
+Run both from the project root. The server speaks MCP over **STDIO**: stdout carries only JSON-RPC, and logs go to stderr. It is normally started by an MCP client rather than by hand (stop a manual run with Ctrl+C). `mcp_client.py` starts the server itself, runs discovery (lists tools and resources, calls `get_rag_capabilities`, reads `rag://subjects`), then calls `health_check` and one `ask_rag`, and prints the results as JSON. If the server refuses to start, the client prints the server's own reason on one line.
+
+**Role.** `--role` is required: `employee` or `manager`, validated by the same access filter the pipeline uses. There is no default and no fallback; an unsupported role stops the server before it serves anything. The role is fixed for the life of the process and is not a tool argument. It is a **server role, not authentication**: it says nothing about who the MCP client is, and whoever starts the process chooses it.
+
+| Surface | What it does |
+|---|---|
+| `ask_rag` | Answers one question as the server's role. Arguments: `question` (required, 1–2000 characters), `config` (one of the five configurations, default `filter + rerank dynamic`), `judge` (default `false`), `updated_on_or_after` (optional ISO date `YYYY-MM-DD`). |
+| `health_check` | Whether the knowledge base is ready: `ready`, `collection_state`, `index_present`, `chunk_count`, `data_plane_reachable`. An unhealthy collection is a normal result, not an error. |
+| `get_rag_capabilities` | The configured role, the five configurations and what each does, the default, judging, security behaviour, input options and the subject vocabulary. |
+| `rag://subjects` | The subject vocabulary (`application/json`). |
+
+**What a response contains.** `ask_rag` returns a deliberate projection of the domain result: the answer, configuration, role, status (`selected` / `not_found`), planned subjects, cutoff, the number of candidates considered, the selected sources as metadata only (`rank` — 1-based —, `source`, `corpus`, `subjects`, `last_updated`, `rerank_score`), a `security_audit` and, when requested, the judgement. It never contains chunk text, vector scores or the question.
+
+**Security and privacy.** The access filter is applied from the server's role on every request. If the security audit finds content outside the role's permitted audience, the answer, sources and judgement are withheld; the response reports only that a violation happened, how many sources it flagged and a fixed explanation — never which documents. Protocol output (including the server name) carries no collection name, endpoint, index name, region or account identifiers, and neither do the health and request logs. Service failures come back as fixed messages (`service_unavailable`, `service_timeout`, `unsupported_role`); unexpected errors as a generic tool error. The server's stderr is operator output: on a security violation the core's audit log names the flagged files there, and an unexpected error is logged with its traceback.
+
+Limitations of Stage 1: STDIO only (no HTTP transport), no authentication (the role is a startup setting), no server-side request timeout — a first call after the knowledge base has been idle can take noticeably longer, so give MCP clients a generous request timeout, and use `health_check` to warm it up.
+
 ## Deployment (Streamlit Community Cloud)
 
-- Streamlit Community Cloud has no `.env`: supply the six required variables (and any optional ones) plus `APP_PASSWORD` as the app's **Secrets**, e.g. `AWS_REGION = "us-east-1"` in TOML.
+- Streamlit Community Cloud has no `.env`: supply the six required variables (and any optional ones) plus `APP_PASSWORD` as the app's **Secrets**, e.g. `AWS_REGION = "<your-region>"` in TOML.
 - `ui/app.py` bridges those secrets into the environment before `config.py` validates it, without overwriting values that are already set (precedence: shell environment > local `.env` > Streamlit secrets). `config.py` itself stays independent of Streamlit.
 - `APP_PASSWORD` protects the whole dashboard. It is a basic shared-password gate for a demo — not user authentication or authorization. The sidebar Employee/Manager role remains a demo retrieval-audience selector.
 - Never commit real credentials or passwords: `.env` and `.streamlit/secrets.toml` are git-ignored; `.env.example` holds placeholders only.

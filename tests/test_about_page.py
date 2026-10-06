@@ -48,7 +48,7 @@ class AboutPageTests(_AboutTestCase):
         for section in ("What the system demonstrates", "High-level architecture", "RAG pipeline",
                         "Security vs relevance", "Evaluation", "Live chat vs evaluation runs",
                         "Why Streamlit?", "Current architecture and future extensions",
-                        "Future MCP integration", "Technology stack", "Architecture principles",
+                        "MCP integration (Stage 1)", "Technology stack", "Architecture principles",
                         "About the author"):
             self.assertIn(section, headers)
         self.assertEqual(len(at.sidebar.radio), 1)  # the shared sidebar (Role) is still there
@@ -85,11 +85,19 @@ class DiagramContentTests(unittest.TestCase):
                 first = [line for line in body.splitlines() if not line.startswith("%%")][0]
                 self.assertTrue(first.startswith("flowchart"), name)
 
-    def test_extensions_diagram_does_not_present_api_or_mcp_as_implemented(self):
+    def test_extensions_diagram_shows_mcp_stage_1_as_implemented_and_the_api_as_future(self):
         body = diagrams.EXTENSIONS
         self.assertIn("Streamlit UI<br/>implemented", body)
+        self.assertIn("MCP server / tools<br/>implemented · Stage 1 · STDIO", body)
         self.assertIn("HTTP API<br/>future extension point", body)
-        self.assertIn("MCP server / tools<br/>planned", body)
+        self.assertNotIn("planned", body)
+
+    def test_mcp_is_described_as_implemented_not_planned(self):
+        self.assertIn("MCP server<br/>STDIO · Stage 1", diagrams.ARCHITECTURE)
+        self.assertNotRegex(diagrams.ARCHITECTURE, r"MCP[^\n]*future")
+        self.assertIn("MCP — Stage 1 implemented (STDIO)", PAGE_SOURCE)
+        self.assertNotIn("MCP — planned", PAGE_SOURCE)
+        self.assertNotIn("Future MCP integration", PAGE_SOURCE)
 
     def test_evaluation_diagram_shows_all_five_configurations_without_a_winner(self):
         for name in CONFIG_NAMES:

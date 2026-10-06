@@ -127,7 +127,7 @@ with reasons:
         "- No separate frontend stack, API contract or build pipeline to maintain.\n"
         "- The UI stays a thin presentation and evaluation layer.\n"
         "- The RAG core has no Streamlit dependency — the CLI already uses it without one.\n"
-        "- API and MCP paths stay open at the same boundary."
+        "- The MCP server (Stage 1) already uses the same boundary; an HTTP API would too."
     )
 fits, later = st.columns(2)
 with fits.container(border=True, height="stretch"):
@@ -155,22 +155,23 @@ st.markdown(
 st.header("Current architecture and future extensions", divider="gray")
 st.mermaid_chart(diagrams.EXTENSIONS)
 st.markdown(
-    ":green-badge[Streamlit UI — implemented] :gray-badge[HTTP API — future extension point] "
-    ":gray-badge[MCP — planned extension point]"
+    ":green-badge[Streamlit UI — implemented] :green-badge[MCP — Stage 1 implemented (STDIO)] "
+    ":gray-badge[HTTP API — future extension point]"
 )
-st.caption("New clients would call the same use cases and return the same domain models; none bypass the core.")
+st.caption("Every client calls the same use cases and returns the same domain models; none bypass the core.")
 
-# --- Future MCP integration -------------------------------------------------------------------
-st.header("Future MCP integration", divider="gray")
+# --- MCP integration (Stage 1) ----------------------------------------------------------------
+st.header("MCP integration (Stage 1)", divider="gray")
 st.markdown(
-    "An MCP server or tool layer could expose selected application capabilities — for example asking the "
-    "knowledge base as a given role, or reading saved evaluation runs — to MCP-compatible clients such as "
-    "Claude Code, Codex or other agent environments. It would reuse the existing application boundary and "
-    "RAG core, with access control still enforced inside the core."
+    "An MCP server exposes the knowledge base to MCP-compatible clients such as MCP Inspector or Claude Code, "
+    "over STDIO. It offers three tools — ask a question, check knowledge-base health, describe its "
+    "capabilities — and the subject vocabulary as a resource. It reuses the existing application boundary "
+    "and RAG core: access control is still enforced inside the core, and responses carry answers and source "
+    "metadata only, never document text or infrastructure details."
 )
 st.caption(
-    "Not implemented. How MCP callers would be authenticated and mapped to roles is an open design "
-    "question to settle first."
+    "The server runs with a role fixed at startup (employee or manager) — a server setting, not "
+    "authentication of the MCP caller. An HTTP transport and caller authentication are not implemented."
 )
 
 # --- Technology stack -------------------------------------------------------------------------

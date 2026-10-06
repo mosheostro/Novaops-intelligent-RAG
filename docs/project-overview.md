@@ -45,6 +45,7 @@ flowchart TB
     subgraph presentation["Presentation"]
         ui["Streamlit UI<br/>Chat · Evaluation runs · Run detail"]
         cli["Evaluation CLI"]
+        mcpsrv["MCP server<br/>STDIO · Stage 1"]
     end
 
     subgraph application["Application boundary"]
@@ -64,13 +65,14 @@ flowchart TB
         br["Amazon Bedrock<br/>embeddings + chat model"]
     end
 
-    future["Future clients<br/>HTTP API · MCP"]
+    future["Future clients<br/>HTTP API"]
 
     user --> ui
     ui --> askuc
     ui --> evaluc
     ui --> runstore
     cli --> evaluc
+    mcpsrv --> askuc
     future -. "not implemented" .-> application
     askuc --> pipeline
     evaluc --> pipeline
@@ -271,7 +273,7 @@ flowchart TB
         st["Streamlit UI<br/>IMPLEMENTED"]
         cli["Evaluation CLI<br/>IMPLEMENTED"]
         api["HTTP API<br/>FUTURE extension point"]
-        mcp["MCP server / tools<br/>PLANNED"]
+        mcp["MCP server / tools<br/>IMPLEMENTED (Stage 1, STDIO)"]
     end
 
     boundary["Application boundary<br/>ask · run experiment · saved runs"]
@@ -281,25 +283,29 @@ flowchart TB
     st --> boundary
     cli --> boundary
     api -.-> boundary
-    mcp -.-> boundary
+    mcp --> boundary
     boundary --> core
     core --> ext
 
     classDef future stroke-dasharray: 5 5
-    class api,mcp future
+    class api future
 ```
 
 Solid lines are implemented; dashed ones are not. Any new client is meant to call the same application use cases and serialize the same domain models, rather than reaching into retrieval or model calls itself.
 
-**Architectural interpretation:** the application layer is an in-process Python boundary, not a network service. A future API or MCP layer would wrap it. One known refinement is already documented: the chat use case currently reuses pipeline helpers that live in the evaluation module. Moving those shared steps into their own module is the planned follow-up once a second client such as an API requires it. It does not change behavior.
+**Architectural interpretation:** the application layer is an in-process Python boundary, not a network service. The MCP server wraps it today; a future API would wrap it the same way. One known refinement is already documented: the chat use case currently reuses pipeline helpers that live in the evaluation module. Moving those shared steps into their own module is the planned follow-up once a second client such as an API requires it. It does not change behavior.
 
-## MCP as a future extension point
+## MCP integration (Stage 1)
 
-The Model Context Protocol (MCP) lets AI clients discover and call external tools. The current separation of client, application boundary and RAG core means an MCP server could later expose selected capabilities — for example "ask the knowledge base as a given role" or "list or read saved evaluation runs" — to MCP-compatible clients such as Claude Code, Codex or other agent environments, without changing the RAG core.
+The Model Context Protocol (MCP) lets AI clients discover and call external tools. Stage 1 exposes the knowledge base to MCP-compatible clients such as MCP Inspector or Claude Code through `mcp_server.py`, without changing the RAG core:
 
-Such a layer would inherit the same guarantees as any other client: access control stays mandatory and fail-closed inside the core, and results use the same domain models. How MCP callers would be authenticated and mapped to roles is an open design question. It must be answered before an MCP layer exists, because the current UI role selector is a demo control and not an identity.
+- **Transport:** STDIO — the client starts the server process and talks JSON-RPC over its stdin/stdout.
+- **Role model:** the server is started with a fixed role (`--role employee` or `--role manager`), validated by the same fail-closed access policy as every other client. It is a server setting, not authentication: whoever starts the server chooses it, and MCP callers cannot change it.
+- **Surface:** `ask_rag` (one question, one configuration, optional judging and recency cutoff), `health_check` (is the knowledge base ready), `get_rag_capabilities` (configurations, default, judging, security behaviour, options, subjects) and the `rag://subjects` resource.
+- **Public output:** a deliberate projection of the domain result — the answer and source metadata (1-based ranks), never chunk text, vector scores or infrastructure identifiers. If the security audit flags a response, the answer, sources and judgement are withheld and only the fact and the number of flagged sources are reported.
+- **Client:** `mcp_client.py` is a minimal client that starts the server, discovers its surface, checks health and asks one question.
 
-**Nothing MCP-related is implemented today**, and no protocol design has been made.
+Not part of Stage 1: an HTTP transport, real authentication of MCP callers, and further tools such as saved evaluation runs. The technical detail is in `docs/architecture.md` §14.
 
 ---
 
@@ -337,5 +343,6 @@ Such a layer would inherit the same guarantees as any other client: access contr
 | Streamlit Community Cloud deployment | Planned (the app is prepared for it; the deployment itself is not part of the repository) |
 | Shared pipeline module separating chat from evaluation code | Planned follow-up (deferred) |
 | HTTP API layer | Future extension point |
-| MCP integration | Planned |
+| MCP integration — Stage 1 (STDIO server: three tools + one resource; minimal client) | Implemented |
+| MCP integration — HTTP transport, authentication, further tools | Planned |
 | Real user authentication and authorization | Future (current roles are demo controls) |

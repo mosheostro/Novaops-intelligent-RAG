@@ -1,6 +1,6 @@
 # Architecture — current state
 
-**Date:** 2026-09-26
+**Date:** 2026-10-06 (MCP Stage 1 added; the rest unchanged since 2026-09-26)
 **Scope:** This document describes the system **as implemented today**. Anything that does not exist yet is marked **FUTURE**.
 `docs/architecture-discovery.md` is the original design and discovery record (index inspection, the decisions and their reasoning). `docs/evaluation-domain-model.md` is the design record for `models.py`. `docs/security-concepts.md` is the detailed access-control reference. Where those documents and the code disagree, this document and the code win.
 
@@ -9,12 +9,12 @@
 ## 1. Layers and boundaries
 
 ```
-                 CURRENT consumers                         FUTURE consumers (not implemented)
-   eval.py main() (CLI)      ui/ (Streamlit Dashboard)      HTTP API · MCP server/tools · other AI clients
-          │                        │
-          │         ┌──────────────┴───────────────┐
-          │         │ ask.ask()        runs.*       │   application / use-case boundary
-          │         └──────────────┬───────────────┘
+                 CURRENT consumers                                          FUTURE (not implemented)
+   eval.py main() (CLI)   ui/ (Streamlit Dashboard)   mcp_server.py (MCP, STDIO)    HTTP API · other AI clients
+          │                        │                          │
+          │         ┌──────────────┴──────────────────────────┴──┐
+          │         │ ask.ask()   runs.*   manage.collection_health() │   application / use-case boundary
+          │         └──────────────┬─────────────────────────────┘
           ▼                        ▼
    eval.evaluate() / evaluate_question()                 evaluation runner + shared pipeline steps
           │
@@ -32,9 +32,10 @@
   - `ask.ask()`: one custom question answered by one configuration.
   - `eval.evaluate()`: one experiment — questions × selected configurations (default all five) × optional cutoff.
   - `runs.py`: saved evaluation artifacts and the run launcher.
-- **Consumers** — the CLI (`eval.py main()`: stdout report, optional `--save`) and the Dashboard (`ui/`).
+- **Consumers** — the CLI (`eval.py main()`: stdout report, optional `--save`), the Dashboard (`ui/`) and the MCP server (`mcp_server.py`, §14).
   - The Dashboard only calls `ask.ask()` and `runs.*` and renders the returned models. It never calls OpenSearch or Bedrock itself, and it holds no pipeline logic.
-  - The architecture stays open for an HTTP API, an MCP tool layer or another UI. Each would call the same `ask.ask()` / `eval.evaluate()` / `runs.*` and serialize the same models. **None of these exist today.**
+  - The MCP server only calls `ask.ask()` and `manage.collection_health()` and returns projections of their results.
+  - The architecture stays open for an HTTP API or another UI. Each would call the same use cases and serialize the same models. **Neither exists today.**
 - **Bedrock boundary** — `client.py` is the only module that constructs the Bedrock runtime client. `ask.py`, `runs.py` and `ui/` construct none. `manage.py` owns the OpenSearch Serverless control-plane client, a documented exception that does not cover Bedrock.
 
 ---
@@ -298,3 +299,31 @@ Run summary: cases (audience · expectation) · configurations · recency · acc
 - The Dashboard selects a subset of canonical test cases by **id**; the dataset is never copied or changed. `runs.launch_run(ids, configs, cutoff)` → `eval.py --ids … --config … [--cutoff …] --save`. `eval.select_questions` keeps dataset order and rejects an unknown id or an empty selection; `resolve_configs` rejects an unknown or empty configuration selection; argparse rejects a malformed date — all before any logging setup, client or model call.
 - The run button stays disabled until at least one case and one configuration are selected and the cost is confirmed; the confirmation resets after each launch.
 - Not offered, deliberately: an access-filter control, a run-wide audience override, date ranges, and any best/winner marking.
+
+---
+
+## 14. MCP adapter (Stage 1)
+
+```
+MCP client (mcp_client.py, MCP Inspector, Claude Code, …)
+        │  STDIO: JSON-RPC on stdin/stdout · logs on stderr
+        ▼
+mcp_server.py --role employee|manager        transport adapter: schemas, projections, error mapping
+        │            │
+        │            └── failures.py         classify_failure(): transport-independent failure categories
+        ▼
+ask.ask()  ·  manage.collection_health()      application use cases (unchanged by MCP)
+```
+
+- **Surface.** Tools `ask_rag`, `health_check`, `get_rag_capabilities`; resource `rag://subjects` (`application/json`). No prompts or resource templates. The server announces itself as `novaops-knowledge-base`, a public name that is deliberately not an infrastructure identifier.
+- **Role.** `--role` is required and validated at startup by `retrieval.access_filter()`; an unsupported role exits (code 2) before anything is served. The role is fixed for the process and is not a tool argument — a server role, not authentication or client identity.
+- **`ask_rag`.** Arguments: `question` (whitespace-stripped, 1–2000 characters — `MAX_QUESTION_CHARS`, an MCP boundary guard rather than an `ask()` rule), `config` (`ConfigName`, default `models.DEFAULT_CONFIG` = `filter + rerank dynamic`, shared with the Chat page), `judge` (default `false`), `updated_on_or_after` (optional ISO date). Invalid input is rejected by the SDK's schema validation before the use case runs.
+- **Response projection (`AskRagResult`).** The answer, `config`, `role`, `status` (`selected` / `not_found`), `planned_subjects`, `cutoff`, `retrieval.candidates_considered`, `sources` (metadata only; `rank` is **1-based**, derived from the 0-based domain `final_rank`), `security_audit` (`violation`, `violating_source_count`, `explanation`) and `judgement`. Never chunk text, vector scores, `top_k_requested` or the question.
+- **Security violation.** When `SecurityAudit.violation` is true the projection withholds the answer (fixed `WITHHELD_ANSWER`), the sources (`[]`) and the judgement (`null`), and reports only the count and a fixed explanation. The domain `SecurityAudit` keeps the file names internally. Judges requested for such a request have already run inside `ask()`.
+- **Health (`HealthResult`).** `ready` (ACTIVE and index present and chunk_count > 0), `collection_state` (control-plane status or `MISSING`), `index_present`, `chunk_count`, `data_plane_reachable` (`null` when not checked). An allow-list over `manage.CollectionHealth`: the endpoint and error text stay with the CLI. A missing, non-active or unreachable collection is a normal result.
+- **Failures.** `failures.classify_failure()` → `unsupported_role` · `service_timeout` (checked first) · `service_unavailable` (OpenSearch/botocore errors and the `SystemExit` that endpoint resolution raises) · `internal`. The MCP layer turns the first three into fixed `ToolError` messages and lets `internal` reach the SDK's generic error, so no exception text reaches the client. Business outcomes (`not_found`, a role-filtered answer, a violation) are results, not errors. A future HTTP API would map the same categories to status codes.
+- **Lifecycle.** No infrastructure access at startup or for capabilities/subjects. The OpenSearch client for `ask_rag` is created lazily on first use and cached only after success. Synchronous tools run on SDK worker threads; there is no server-side timeout in Stage 1, and a cancelled request's work finishes in its thread. Ctrl+C stops a manually started server quietly.
+- **Logging.** The SDK logs to stderr; stdout is protocol only. The health logs carry states and exception types, not names or error text; the request log carries the configuration, role and chunk count, never the question or answer.
+- **Dependencies.** The SDK is optional (`requirements-mcp.txt`: `mcp>=2.3,<3`); `requirements.txt` and the dashboard deployment do not include it. Only `mcp_server.py` and `mcp_client.py` import `mcp`; nothing imports either; enforced by `tests/test_mcp_boundary.py`.
+- **Client.** `mcp_client.py` starts the server over STDIO, initializes a `ClientSession`, discovers the surface, calls `health_check` and one `ask_rag`, and prints JSON. It validates nothing itself and imports no project module; on a startup refusal it prints the server's own reason.
+- **Not in Stage 1.** Streamable HTTP transport, authentication, server-side timeouts, prompts, further tools or resources.

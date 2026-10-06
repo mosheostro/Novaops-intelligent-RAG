@@ -11,7 +11,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from opensearchpy.exceptions import OpenSearchException
 
 import ask
-from models import CONFIG_NAMES, AskResult
+from models import CONFIG_NAMES, DEFAULT_CONFIG, AskResult
 from ui.components import answer_card, judge_panel, sources, trace
 from ui.components.safe_markdown import neutralize_links
 from ui.state import get_client
@@ -42,7 +42,7 @@ st.title("Ask NovaOps")
 st.caption("Answers come only from the employee handbook and, for managers, the manager playbook.")
 
 cols = st.columns([3, 2, 2, 1], vertical_alignment="bottom")
-config = cols[0].selectbox("Configuration", CONFIG_NAMES, index=CONFIG_NAMES.index("filter + rerank dynamic"),
+config = cols[0].selectbox("Configuration", CONFIG_NAMES, index=CONFIG_NAMES.index(DEFAULT_CONFIG),
                            key="chat_config")
 cutoff = cols[1].date_input("Updated on or after", value=None, key="chat_cutoff",
                             help="Optional. Only documents with last_updated on or after this date are searched.")

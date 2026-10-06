@@ -39,6 +39,9 @@ CONFIG_NAMES: tuple[ConfigName, ...] = (
     "filter + rerank dynamic",
 )
 
+# The single default for every client that lets the caller omit the config (Chat, MCP).
+DEFAULT_CONFIG: ConfigName = "filter + rerank dynamic"
+
 
 class _Frozen(BaseModel):
     """Base for every domain model below: immutable once constructed."""
