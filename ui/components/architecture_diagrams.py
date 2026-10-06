@@ -31,9 +31,9 @@ def styled_diagram(body: str) -> str:
 # Layered top to bottom: clients → application boundary → core / evaluation → services.
 ARCHITECTURE = styled_diagram("""flowchart TB
     user(["User"])
-    ui["Streamlit UI<br/>Chat · Evaluation runs · About"]
+    ui["Streamlit UI<br/>Chat · Evaluation runs · MCP page · About"]
     cli["Evaluation CLI"]
-    mcpsrv["MCP server<br/>STDIO · Stage 1"]
+    mcpsrv["MCP server<br/>STDIO · Streamable HTTP"]
     future["HTTP API<br/>future client"]
     boundary["Application boundary<br/>ask one question · run an experiment · saved runs"]
     ragcore["RAG core<br/>access · planning · filtering · retrieval<br/>reranking · selection · answer"]
@@ -44,6 +44,7 @@ ARCHITECTURE = styled_diagram("""flowchart TB
     ui --> boundary
     cli --> boundary
     mcpsrv --> boundary
+    ui -.->|MCP page: MCP client over HTTP| mcpsrv
     future -.->|not implemented| boundary
     boundary --> ragcore
     boundary -->|evaluation path| evaluation
@@ -151,7 +152,7 @@ STREAMLIT = styled_diagram("""flowchart TB
 EXTENSIONS = styled_diagram("""flowchart TB
     streamlit["Streamlit UI<br/>implemented"]
     api["HTTP API<br/>future extension point"]
-    mcp["MCP server / tools<br/>implemented · Stage 1 · STDIO"]
+    mcp["MCP server / tools<br/>implemented · STDIO · Streamable HTTP"]
     streamlit --> boundary["Application boundary"]
     api -.-> boundary
     mcp --> boundary
@@ -164,6 +165,25 @@ EXTENSIONS = styled_diagram("""flowchart TB
     class services ext
 """)
 
+# MCP: two clients, one server, the same application boundary. Transports are on the edges.
+MCP = styled_diagram("""flowchart LR
+    subgraph clients["MCP clients"]
+        cli["mcp_client.py CLI<br/>discover · health · ask"]
+        page["Dashboard MCP page<br/>connects, never starts the server"]
+    end
+    server["MCP server 0.2.0<br/>ask_rag · health_check · get_rag_capabilities<br/>resource rag://subjects<br/>role fixed at startup"]
+    boundary["Application boundary"]
+    ragcore["RAG core<br/>access control enforced here"]
+    cli -->|"STDIO or Streamable HTTP"| server
+    page -->|"Streamable HTTP · loopback /mcp"| server
+    server --> boundary
+    boundary --> ragcore
+    class cli,page client
+    class server app
+    class boundary app
+    class ragcore core
+""")
+
 ALL = {
     "architecture": ARCHITECTURE,
     "pipeline": PIPELINE,
@@ -171,4 +191,5 @@ ALL = {
     "evaluation": EVALUATION,
     "streamlit": STREAMLIT,
     "extensions": EXTENSIONS,
+    "mcp": MCP,
 }

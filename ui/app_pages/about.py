@@ -127,7 +127,7 @@ with reasons:
         "- No separate frontend stack, API contract or build pipeline to maintain.\n"
         "- The UI stays a thin presentation and evaluation layer.\n"
         "- The RAG core has no Streamlit dependency — the CLI already uses it without one.\n"
-        "- The MCP server (Stage 1) already uses the same boundary; an HTTP API would too."
+        "- The MCP server already uses the same boundary; an HTTP API would too."
     )
 fits, later = st.columns(2)
 with fits.container(border=True, height="stretch"):
@@ -155,23 +155,26 @@ st.markdown(
 st.header("Current architecture and future extensions", divider="gray")
 st.mermaid_chart(diagrams.EXTENSIONS)
 st.markdown(
-    ":green-badge[Streamlit UI — implemented] :green-badge[MCP — Stage 1 implemented (STDIO)] "
+    ":green-badge[Streamlit UI — implemented] :green-badge[MCP — implemented (STDIO · Streamable HTTP)] "
     ":gray-badge[HTTP API — future extension point]"
 )
 st.caption("Every client calls the same use cases and returns the same domain models; none bypass the core.")
 
-# --- MCP integration (Stage 1) ----------------------------------------------------------------
-st.header("MCP integration (Stage 1)", divider="gray")
+# --- MCP integration --------------------------------------------------------------------------
+st.header("MCP integration", divider="gray")
+st.mermaid_chart(diagrams.MCP)
 st.markdown(
     "An MCP server exposes the knowledge base to MCP-compatible clients such as MCP Inspector or Claude Code, "
-    "over STDIO. It offers three tools — ask a question, check knowledge-base health, describe its "
-    "capabilities — and the subject vocabulary as a resource. It reuses the existing application boundary "
-    "and RAG core: access control is still enforced inside the core, and responses carry answers and source "
-    "metadata only, never document text or infrastructure details."
+    "over STDIO or Streamable HTTP. It offers three tools — ask a question, check knowledge-base health, "
+    "describe its capabilities — and the subject vocabulary as a resource. It reuses the existing application "
+    "boundary and RAG core: access control is still enforced inside the core, and responses carry answers and "
+    "source metadata only, never document text or infrastructure details. The dashboard's MCP server page is "
+    "itself an MCP client: it connects to a separately running server and never starts or manages it."
 )
 st.caption(
     "The server runs with a role fixed at startup (employee or manager) — a server setting, not "
-    "authentication of the MCP caller. An HTTP transport and caller authentication are not implemented."
+    "authentication of the MCP caller. Caller authentication is not implemented, so the HTTP transport "
+    "accepts local (loopback) connections only."
 )
 
 # --- Technology stack -------------------------------------------------------------------------

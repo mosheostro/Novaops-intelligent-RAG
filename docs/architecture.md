@@ -1,6 +1,6 @@
 # Architecture — current state
 
-**Date:** 2026-10-06 (MCP Stage 1 added; the rest unchanged since 2026-09-26)
+**Date:** 2026-10-06 (MCP adapter: Stage 1 STDIO and Stage 2 Streamable HTTP + dashboard MCP page; the rest unchanged since 2026-09-26)
 **Scope:** This document describes the system **as implemented today**. Anything that does not exist yet is marked **FUTURE**.
 `docs/architecture-discovery.md` is the original design and discovery record (index inspection, the decisions and their reasoning). `docs/evaluation-domain-model.md` is the design record for `models.py`. `docs/security-concepts.md` is the detailed access-control reference. Where those documents and the code disagree, this document and the code win.
 
@@ -9,8 +9,10 @@
 ## 1. Layers and boundaries
 
 ```
-                 CURRENT consumers                                          FUTURE (not implemented)
-   eval.py main() (CLI)   ui/ (Streamlit Dashboard)   mcp_server.py (MCP, STDIO)    HTTP API · other AI clients
+                 CURRENT consumers                                                  FUTURE (not implemented)
+   eval.py main() (CLI)   ui/ (Streamlit Dashboard)   mcp_server.py (MCP: STDIO · HTTP)    REST/HTTP API · other UIs
+          │                        │      ▲                   │
+          │                        │      └ MCP page ── mcp_client.py ── Streamable HTTP ┘  (an MCP client, §14)
           │                        │                          │
           │         ┌──────────────┴──────────────────────────┴──┐
           │         │ ask.ask()   runs.*   manage.collection_health() │   application / use-case boundary
@@ -35,7 +37,8 @@
 - **Consumers** — the CLI (`eval.py main()`: stdout report, optional `--save`), the Dashboard (`ui/`) and the MCP server (`mcp_server.py`, §14).
   - The Dashboard only calls `ask.ask()` and `runs.*` and renders the returned models. It never calls OpenSearch or Bedrock itself, and it holds no pipeline logic.
   - The MCP server only calls `ask.ask()` and `manage.collection_health()` and returns projections of their results.
-  - The architecture stays open for an HTTP API or another UI. Each would call the same use cases and serialize the same models. **Neither exists today.**
+  - The Dashboard's **MCP server** page is the exception to "calls the use cases in-process": it is an MCP *client* (`mcp_client.py` → Streamable HTTP → a separately running `mcp_server.py`) and never calls the core itself (§10, §14).
+  - The architecture stays open for a REST/HTTP API or another UI. Each would call the same use cases and serialize the same models. **Neither exists today.**
 - **Bedrock boundary** — `client.py` is the only module that constructs the Bedrock runtime client. `ask.py`, `runs.py` and `ui/` construct none. `manage.py` owns the OpenSearch Serverless control-plane client, a documented exception that does not cover Bedrock.
 
 ---
@@ -161,7 +164,7 @@ A custom question is never written into a question set or a saved run, and the D
 - Every model is frozen. The pipeline builds them directly; there is no internal dict stage.
 - The one narrow exception is `eval.rerank_candidates`, which adapts to `reranker.rerank_all`'s fixed dict-in/dict-out contract (`{"text": ...}`) and maps the results back by identity.
 - JSON appears only at external boundaries: `EvaluationResult.model_dump_json()` for saved runs and `model_validate_json()` to load them.
-- The same models serve the CLI report, the Dashboard renderers, the tests, and a FUTURE API or MCP layer, which would serialize them unchanged.
+- The same models serve the CLI report, the Dashboard renderers, the tests, and a FUTURE API, which would serialize them unchanged. The MCP adapter (§14) returns explicit projections of them instead.
 - `ConfigurationResult` (eval) and `AskResult` (chat) share `RetrievalResult` and `SelectionResult`, so the Dashboard renders both with the same components.
 - No repository, service, mapper or factory layers exist, and none are needed.
 
@@ -225,6 +228,11 @@ The Dashboard is an **evaluation laboratory and presentation layer**: it exposes
   - Sources show chunk text as plain text in a bounded, scrollable box (never as markdown, so a chunk starting with `# Title` cannot become a heading); every answer shows an access badge (`access ok` / `access violation`).
   - Refusal presentation: Chat shows "Expected: none — custom question · Detected (refusal judge): Refusal: Yes / No" (never Refusal OK). In runs, expected-refusal cases show *Expected: refusal · Actual (refusal judge): refused / did not refuse · Refusal OK ✓/✗ · content judges skipped*; answerable cases show *Expected: answer · Refusal: not judged*. The question matrix has an *Expected* column. Presentation only — no score is invented.
 - **About / Architecture** — a read-only page that presents `docs/project-overview.md` visually (Mermaid diagrams via `st.mermaid_chart`, sources in `ui/components/architecture_diagrams.py`). Static content only: no backend call, no run data, no session state. Help covers how to use the app; this page covers what the system is and why.
+- **MCP server** — an MCP client/demo surface (`ui/app_pages/mcp_page.py`, named so it cannot shadow the `mcp` package) for a separately running MCP server; it never starts, stops or supervises one.
+  - It talks to the server only through `mcp_client`'s synchronous functions (`describe`, `check_health`, `ask`) with a 120 s read timeout, and imports neither the MCP SDK, `anyio`, `mcp_server` nor the RAG core.
+  - Nothing is called when the page opens; **Connect / Refresh** runs discovery and keeps it in session state. The URL must be loopback (`127.0.0.1`, `localhost`, `::1`), checked on the parsed host.
+  - Shows the server's identity, transport, role (with a note when it differs from the sidebar role, which does not control it), tools, resources, subjects and capabilities; an explicit health check; and `ask_rag` with configurations taken from the server's capabilities. A security violation shows only the audit; `not_found` is a normal result; the raw MCP response is in an expander.
+  - Errors: an unavailable server is a warning with the start command, a tool error shows the server's safe message, anything else a generic message (details to the log). Without the optional SDK the page explains how to install it; the rest of the dashboard is unaffected.
 - **Help** — a sidebar expander on every page: what the dashboard is, Chat vs runs, the five configurations, cutoff, judges, Refusal OK, sources/trace, runs, and the Bedrock cost warning.
 - **Evaluation runs** — the experiment launcher (§13) and a saved-runs table (started, question ids, number of configurations, cutoff, status).
 - **Run detail** —
@@ -302,28 +310,41 @@ Run summary: cases (audience · expectation) · configurations · recency · acc
 
 ---
 
-## 14. MCP adapter (Stage 1)
+## 14. MCP adapter
+
+Stage 1 added the server over STDIO and a minimal client; Stage 2 added Streamable HTTP as a second transport, the command-based client and the dashboard's MCP page. The server, its surface and its projections are the same on both transports.
 
 ```
-MCP client (mcp_client.py, MCP Inspector, Claude Code, …)
-        │  STDIO: JSON-RPC on stdin/stdout · logs on stderr
+MCP clients: mcp_client.py CLI · Dashboard MCP page (via mcp_client) · MCP Inspector · Claude Code · …
+        │  STDIO: JSON-RPC on stdin/stdout, logs on stderr — the client starts the server
+        │  Streamable HTTP: POST http://127.0.0.1:<port>/mcp — the server runs on its own (loopback only)
         ▼
-mcp_server.py --role employee|manager        transport adapter: schemas, projections, error mapping
+mcp_server.py --role employee|manager [--transport stdio|streamable-http]
+        │                                    transport adapter: schemas, projections, error mapping
         │            │
         │            └── failures.py         classify_failure(): transport-independent failure categories
         ▼
 ask.ask()  ·  manage.collection_health()      application use cases (unchanged by MCP)
 ```
 
-- **Surface.** Tools `ask_rag`, `health_check`, `get_rag_capabilities`; resource `rag://subjects` (`application/json`). No prompts or resource templates. The server announces itself as `novaops-knowledge-base`, a public name that is deliberately not an infrastructure identifier.
+- **Surface.** Tools `ask_rag`, `health_check`, `get_rag_capabilities`; resource `rag://subjects` (`application/json`). No `get_subjects` tool, prompts or resource templates. The server announces itself as `novaops-knowledge-base`, a public name that is deliberately not an infrastructure identifier, version `SERVER_VERSION` = `0.2.0` — the server implementation's version, bumped by hand, independent of the capabilities `contract_version` (1) and of the MCP protocol version.
+- **Subjects in two places.** `get_rag_capabilities` includes the subject vocabulary (and `subjects_resource`, pointing to `rag://subjects`) so that tools-only clients see it; the resource is the read-only vocabulary for clients that read resources. Subjects are not an `ask_rag` input — the planner chooses them. Both come from `subjects.SUBJECTS`, so they cannot drift.
+- **Transports.** `--transport stdio` (default) or `streamable-http`; the same `build_server(role)` serves both.
+  - Streamable HTTP: `stateless_http=True`, `json_response=True`, fixed path `/mcp`, `--host` (default `127.0.0.1`) and `--port` (default 8000). Only `127.0.0.1`, `localhost` and `::1` are accepted (exit 2 otherwise) — exactly the hosts for which the SDK enables its DNS-rebinding protection (a foreign `Host` gets 421, a foreign `Origin` 403). There is no authentication, so remote binding is refused rather than configurable. One process per role: every HTTP caller gets that server's role.
+  - Tool failures are the same JSON-RPC results with `isError` on both transports (HTTP 200); nothing is mapped to HTTP status codes.
 - **Role.** `--role` is required and validated at startup by `retrieval.access_filter()`; an unsupported role exits (code 2) before anything is served. The role is fixed for the process and is not a tool argument — a server role, not authentication or client identity.
 - **`ask_rag`.** Arguments: `question` (whitespace-stripped, 1–2000 characters — `MAX_QUESTION_CHARS`, an MCP boundary guard rather than an `ask()` rule), `config` (`ConfigName`, default `models.DEFAULT_CONFIG` = `filter + rerank dynamic`, shared with the Chat page), `judge` (default `false`), `updated_on_or_after` (optional ISO date). Invalid input is rejected by the SDK's schema validation before the use case runs.
 - **Response projection (`AskRagResult`).** The answer, `config`, `role`, `status` (`selected` / `not_found`), `planned_subjects`, `cutoff`, `retrieval.candidates_considered`, `sources` (metadata only; `rank` is **1-based**, derived from the 0-based domain `final_rank`), `security_audit` (`violation`, `violating_source_count`, `explanation`) and `judgement`. Never chunk text, vector scores, `top_k_requested` or the question.
 - **Security violation.** When `SecurityAudit.violation` is true the projection withholds the answer (fixed `WITHHELD_ANSWER`), the sources (`[]`) and the judgement (`null`), and reports only the count and a fixed explanation. The domain `SecurityAudit` keeps the file names internally. Judges requested for such a request have already run inside `ask()`.
 - **Health (`HealthResult`).** `ready` (ACTIVE and index present and chunk_count > 0), `collection_state` (control-plane status or `MISSING`), `index_present`, `chunk_count`, `data_plane_reachable` (`null` when not checked). An allow-list over `manage.CollectionHealth`: the endpoint and error text stay with the CLI. A missing, non-active or unreachable collection is a normal result.
 - **Failures.** `failures.classify_failure()` → `unsupported_role` · `service_timeout` (checked first) · `service_unavailable` (OpenSearch/botocore errors and the `SystemExit` that endpoint resolution raises) · `internal`. The MCP layer turns the first three into fixed `ToolError` messages and lets `internal` reach the SDK's generic error, so no exception text reaches the client. Business outcomes (`not_found`, a role-filtered answer, a violation) are results, not errors. A future HTTP API would map the same categories to status codes.
-- **Lifecycle.** No infrastructure access at startup or for capabilities/subjects. The OpenSearch client for `ask_rag` is created lazily on first use and cached only after success. Synchronous tools run on SDK worker threads; there is no server-side timeout in Stage 1, and a cancelled request's work finishes in its thread. Ctrl+C stops a manually started server quietly.
-- **Logging.** The SDK logs to stderr; stdout is protocol only. The health logs carry states and exception types, not names or error text; the request log carries the configuration, role and chunk count, never the question or answer.
-- **Dependencies.** The SDK is optional (`requirements-mcp.txt`: `mcp>=2.3,<3`); `requirements.txt` and the dashboard deployment do not include it. Only `mcp_server.py` and `mcp_client.py` import `mcp`; nothing imports either; enforced by `tests/test_mcp_boundary.py`.
-- **Client.** `mcp_client.py` starts the server over STDIO, initializes a `ClientSession`, discovers the surface, calls `health_check` and one `ask_rag`, and prints JSON. It validates nothing itself and imports no project module; on a startup refusal it prints the server's own reason.
-- **Not in Stage 1.** Streamable HTTP transport, authentication, server-side timeouts, prompts, further tools or resources.
+- **Lifecycle.** No infrastructure access at startup or for capabilities/subjects. The OpenSearch client for `ask_rag` is created lazily on first use and cached only after success. Synchronous tools run on SDK worker threads; there is no server-side timeout, and a cancelled request's work finishes in its thread. Ctrl+C stops a manually started server quietly.
+- **Logging.** The SDK logs to stderr; over STDIO stdout is protocol only (over HTTP, uvicorn's access log goes to stdout). The health logs carry states and exception types, not names or error text; the request log carries the configuration, role and chunk count, never the question or answer.
+- **Dependencies.** The SDK is optional (`requirements-mcp.txt`: `mcp>=2.3,<3`); `requirements.txt` and the dashboard deployment do not include it. Only `mcp_server.py` and `mcp_client.py` import `mcp`; only `mcp_client.py` imports `anyio`; nothing imports `mcp_server`; only `ui/app_pages/mcp_page.py` imports `mcp_client`. Enforced by `tests/test_mcp_boundary.py`.
+- **Client (`mcp_client.py`).** Imports no project module and validates nothing of the server's domain; it passes the role through and shows what the server returns.
+  - Connections: `connect(role)` starts a STDIO server; `connect_http(url, read_timeout=None)` connects to a running one — by default with the SDK's own HTTP client and timeouts, or with only the read timeout replaced. Kept separate on purpose.
+  - Synchronous functions for non-async callers (the dashboard page): `describe(url)`, `check_health(url)`, `ask(url, question, …)`, each one short HTTP session, plain dicts in and out.
+  - Errors: `check_url()` raises `InvalidServerUrlError` before connecting (scheme, host, port, missing path — with the fix). Transport failures become `ServerUnavailableError` with a `kind` — `unreachable`, `timeout`, `not_found` (HTTP 404: wrong path), `not_mcp`, `dropped` — and a message built from fixed wording and the URL's scheme, host, port and path (never credentials, query or exception text). `ToolCallError` carries the server's own safe message. Any other exception is a programming error and is not disguised.
+  - CLI: `discover` / `health` / `ask QUESTION [--config] [--judge] [--updated-on-or-after]`, each with `--url URL` (HTTP) or `--role ROLE` (STDIO, a server started for that command) and `--json`. Text output is a view of exactly what the server returned; `discover`'s text also shows the tool and resource descriptions the server publishes, and lists the subjects under `rag://subjects`. Usage errors exit 2, operational errors exit 1 with one line; on a STDIO startup refusal the client prints the server's own reason.
+- **Dashboard page.** An MCP client of a separately running server; see §10.
+- **Not implemented.** Authentication of MCP callers, remote (non-loopback) binding, TLS, CORS for browser clients, the legacy SSE transport, resumability/session management, server-side timeouts, rate limiting, a REST API, prompts, further tools or resources.

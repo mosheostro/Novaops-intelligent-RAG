@@ -48,7 +48,7 @@ class AboutPageTests(_AboutTestCase):
         for section in ("What the system demonstrates", "High-level architecture", "RAG pipeline",
                         "Security vs relevance", "Evaluation", "Live chat vs evaluation runs",
                         "Why Streamlit?", "Current architecture and future extensions",
-                        "MCP integration (Stage 1)", "Technology stack", "Architecture principles",
+                        "MCP integration", "Technology stack", "Architecture principles",
                         "About the author"):
             self.assertIn(section, headers)
         self.assertEqual(len(at.sidebar.radio), 1)  # the shared sidebar (Role) is still there
@@ -85,19 +85,40 @@ class DiagramContentTests(unittest.TestCase):
                 first = [line for line in body.splitlines() if not line.startswith("%%")][0]
                 self.assertTrue(first.startswith("flowchart"), name)
 
-    def test_extensions_diagram_shows_mcp_stage_1_as_implemented_and_the_api_as_future(self):
+    def test_extensions_diagram_shows_mcp_as_implemented_and_the_api_as_future(self):
         body = diagrams.EXTENSIONS
         self.assertIn("Streamlit UI<br/>implemented", body)
-        self.assertIn("MCP server / tools<br/>implemented · Stage 1 · STDIO", body)
+        self.assertIn("MCP server / tools<br/>implemented · STDIO · Streamable HTTP", body)
         self.assertIn("HTTP API<br/>future extension point", body)
         self.assertNotIn("planned", body)
 
     def test_mcp_is_described_as_implemented_not_planned(self):
-        self.assertIn("MCP server<br/>STDIO · Stage 1", diagrams.ARCHITECTURE)
+        self.assertIn("MCP server<br/>STDIO · Streamable HTTP", diagrams.ARCHITECTURE)
+        self.assertIn("ui -.->|MCP page: MCP client over HTTP| mcpsrv", diagrams.ARCHITECTURE)
         self.assertNotRegex(diagrams.ARCHITECTURE, r"MCP[^\n]*future")
-        self.assertIn("MCP — Stage 1 implemented (STDIO)", PAGE_SOURCE)
+        self.assertIn("MCP — implemented (STDIO · Streamable HTTP)", PAGE_SOURCE)
         self.assertNotIn("MCP — planned", PAGE_SOURCE)
         self.assertNotIn("Future MCP integration", PAGE_SOURCE)
+        self.assertNotIn("Stage 1", PAGE_SOURCE + "".join(diagrams.ALL.values()))
+        self.assertNotIn("HTTP transport and caller authentication are not implemented", PAGE_SOURCE)
+
+    def test_mcp_diagram_shows_both_clients_their_transports_and_the_path_to_the_core(self):
+        body = diagrams.MCP
+        self.assertIn("mcp_client.py CLI", body)
+        self.assertIn("Dashboard MCP page", body)
+        self.assertIn("MCP server", body)
+        self.assertIn("ask_rag · health_check · get_rag_capabilities", body)
+        self.assertIn("rag://subjects", body)
+        self.assertIn('cli -->|"STDIO or Streamable HTTP"| server', body)
+        self.assertIn('page -->|"Streamable HTTP · loopback /mcp"| server', body)
+        self.assertIn("server --> boundary", body)
+        self.assertIn("boundary --> ragcore", body)
+        self.assertNotIn("page --> boundary", body)  # the page reaches the core only through the server
+
+    def test_the_mcp_section_shows_the_mcp_diagram(self):
+        start = PAGE_SOURCE.index('st.header("MCP integration"')
+        end = PAGE_SOURCE.index("st.header(", start + 1)
+        self.assertIn("st.mermaid_chart(diagrams.MCP)", PAGE_SOURCE[start:end])
 
     def test_evaluation_diagram_shows_all_five_configurations_without_a_winner(self):
         for name in CONFIG_NAMES:

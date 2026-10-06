@@ -43,9 +43,9 @@ flowchart TB
     user(["User"])
 
     subgraph presentation["Presentation"]
-        ui["Streamlit UI<br/>Chat · Evaluation runs · Run detail"]
+        ui["Streamlit UI<br/>Chat · Evaluation runs · Run detail · MCP page"]
         cli["Evaluation CLI"]
-        mcpsrv["MCP server<br/>STDIO · Stage 1"]
+        mcpsrv["MCP server<br/>STDIO · Streamable HTTP"]
     end
 
     subgraph application["Application boundary"]
@@ -73,6 +73,7 @@ flowchart TB
     ui --> runstore
     cli --> evaluc
     mcpsrv --> askuc
+    ui -. "MCP page: MCP client over HTTP" .-> mcpsrv
     future -. "not implemented" .-> application
     askuc --> pipeline
     evaluc --> pipeline
@@ -273,7 +274,7 @@ flowchart TB
         st["Streamlit UI<br/>IMPLEMENTED"]
         cli["Evaluation CLI<br/>IMPLEMENTED"]
         api["HTTP API<br/>FUTURE extension point"]
-        mcp["MCP server / tools<br/>IMPLEMENTED (Stage 1, STDIO)"]
+        mcp["MCP server / tools<br/>IMPLEMENTED (STDIO · Streamable HTTP)"]
     end
 
     boundary["Application boundary<br/>ask · run experiment · saved runs"]
@@ -295,17 +296,32 @@ Solid lines are implemented; dashed ones are not. Any new client is meant to cal
 
 **Architectural interpretation:** the application layer is an in-process Python boundary, not a network service. The MCP server wraps it today; a future API would wrap it the same way. One known refinement is already documented: the chat use case currently reuses pipeline helpers that live in the evaluation module. Moving those shared steps into their own module is the planned follow-up once a second client such as an API requires it. It does not change behavior.
 
-## MCP integration (Stage 1)
+## MCP integration
 
-The Model Context Protocol (MCP) lets AI clients discover and call external tools. Stage 1 exposes the knowledge base to MCP-compatible clients such as MCP Inspector or Claude Code through `mcp_server.py`, without changing the RAG core:
+The Model Context Protocol (MCP) lets AI clients discover and call external tools. `mcp_server.py` (`novaops-knowledge-base`, version 0.2.0) exposes the knowledge base to MCP-compatible clients such as MCP Inspector or Claude Code, without changing the RAG core. Stage 1 delivered the STDIO server; Stage 2 added Streamable HTTP, the command-based client and the dashboard's MCP page:
 
-- **Transport:** STDIO — the client starts the server process and talks JSON-RPC over its stdin/stdout.
+```mermaid
+flowchart LR
+    subgraph clients["MCP clients"]
+        cli["mcp_client.py CLI<br/>discover · health · ask"]
+        page["Dashboard MCP page<br/>connects, never starts the server"]
+    end
+    server["MCP server 0.2.0<br/>ask_rag · health_check · get_rag_capabilities<br/>resource rag://subjects<br/>role fixed at startup"]
+    boundary["Application boundary"]
+    ragcore["RAG core<br/>access control enforced here"]
+    cli -->|"STDIO or Streamable HTTP"| server
+    page -->|"Streamable HTTP · loopback /mcp"| server
+    server --> boundary
+    boundary --> ragcore
+```
+
+- **Transports:** STDIO — the client starts the server process and talks JSON-RPC over its stdin/stdout; and Streamable HTTP — the server runs on its own at `http://127.0.0.1:<port>/mcp`, loopback only, because MCP callers are not authenticated.
 - **Role model:** the server is started with a fixed role (`--role employee` or `--role manager`), validated by the same fail-closed access policy as every other client. It is a server setting, not authentication: whoever starts the server chooses it, and MCP callers cannot change it.
-- **Surface:** `ask_rag` (one question, one configuration, optional judging and recency cutoff), `health_check` (is the knowledge base ready), `get_rag_capabilities` (configurations, default, judging, security behaviour, options, subjects) and the `rag://subjects` resource.
+- **Surface:** `ask_rag` (one question, one configuration, optional judging and recency cutoff), `health_check` (is the knowledge base ready), `get_rag_capabilities` (configurations, default, judging, security behaviour, options, subjects) and the `rag://subjects` resource — nothing else (no prompts or resource templates).
 - **Public output:** a deliberate projection of the domain result — the answer and source metadata (1-based ranks), never chunk text, vector scores or infrastructure identifiers. If the security audit flags a response, the answer, sources and judgement are withheld and only the fact and the number of flagged sources are reported.
-- **Client:** `mcp_client.py` is a minimal client that starts the server, discovers its surface, checks health and asks one question.
+- **Clients:** `mcp_client.py` is a command-line client with `discover`, `health` and `ask` commands, over HTTP (`--url`) or STDIO (`--role`). The dashboard's **MCP server** page is an MCP client too: it connects to a separately running server and shows discovery, health and answers obtained through the protocol. It never starts or manages the server — client and server are separate processes.
 
-Not part of Stage 1: an HTTP transport, real authentication of MCP callers, and further tools such as saved evaluation runs. The technical detail is in `docs/architecture.md` §14.
+Not implemented: authentication of MCP callers, remote (non-loopback) access, a REST API, and further tools such as saved evaluation runs. The technical detail is in `docs/architecture.md` §14.
 
 ---
 
@@ -343,6 +359,6 @@ Not part of Stage 1: an HTTP transport, real authentication of MCP callers, and 
 | Streamlit Community Cloud deployment | Planned (the app is prepared for it; the deployment itself is not part of the repository) |
 | Shared pipeline module separating chat from evaluation code | Planned follow-up (deferred) |
 | HTTP API layer | Future extension point |
-| MCP integration — Stage 1 (STDIO server: three tools + one resource; minimal client) | Implemented |
-| MCP integration — HTTP transport, authentication, further tools | Planned |
+| MCP integration — server over STDIO and Streamable HTTP (three tools + one resource), CLI client, dashboard MCP page | Implemented |
+| MCP integration — authentication of MCP callers, further tools | Planned |
 | Real user authentication and authorization | Future (current roles are demo controls) |

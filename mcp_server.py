@@ -13,6 +13,11 @@ client is: whoever launches the process chooses it.
 
 STDIO transport: stdout carries the JSON-RPC protocol and nothing else. Logs go
 to stderr (the SDK configures that); usage and startup errors go to stderr too.
+
+Streamable HTTP is an additional transport over the same server — stateless,
+plain JSON responses, endpoint http://<host>:<port>/mcp, loopback hosts only:
+
+    python mcp_server.py --transport streamable-http --role employee [--port 8000]
 """
 import argparse
 import json
@@ -46,6 +51,13 @@ SUBJECTS_URI = "rag://subjects"
 # The name every client receives in initialize -> serverInfo. A neutral public name —
 # never derived from, or equal to, any infrastructure identifier (collection, index, ...).
 SERVER_NAME = "novaops-knowledge-base"
+# serverInfo.version: this server implementation's version, bumped by hand when the server
+# changes. Independent of CAPABILITIES_CONTRACT_VERSION and of the MCP protocol version.
+SERVER_VERSION = "0.2.0"
+# Streamable HTTP: one fixed endpoint, bound to loopback only (there is no authentication).
+# Exactly the hosts for which the SDK enables its DNS-rebinding protection on its own.
+HTTP_PATH = "/mcp"
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 # Fixed wording for a failed security audit: names the rule category only — never a
 # file, a document or any of its text.
@@ -313,7 +325,7 @@ def build_server(role: str) -> MCPServer:
     """The MCP server for one configured role. The role is validated first, so a
     server with an unsupported role is never constructed."""
     access_filter(role)  # the single source of truth for supported roles; raises UnsupportedAudienceError
-    server = MCPServer(SERVER_NAME, log_level="INFO")
+    server = MCPServer(SERVER_NAME, version=SERVER_VERSION, log_level="INFO")
     opensearch = LazyOpenSearchClient()
 
     @server.tool()
@@ -351,10 +363,17 @@ def build_server(role: str) -> MCPServer:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="NovaOps knowledge base MCP server (STDIO).")
+    parser = argparse.ArgumentParser(description="NovaOps knowledge base MCP server (STDIO or Streamable HTTP).")
     parser.add_argument("--role", required=True,
                         help=f"server role, one of {sorted(SUPPORTED_AUDIENCES)}; not authentication")
+    parser.add_argument("--transport", choices=["stdio", "streamable-http"], default="stdio")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help=f"streamable-http only; loopback only, one of {list(LOOPBACK_HOSTS)}")
+    parser.add_argument("--port", type=int, default=8000, help="streamable-http only")
     args = parser.parse_args(argv)
+    if args.host not in LOOPBACK_HOSTS:
+        parser.error(f"--host must be a loopback address, one of {list(LOOPBACK_HOSTS)}: "
+                     "the HTTP transport has no authentication")
     try:
         server = build_server(args.role)
     except UnsupportedAudienceError:
@@ -362,7 +381,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     for name in NOISY_THIRD_PARTY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
     try:
-        server.run("stdio")
+        if args.transport == "stdio":
+            server.run("stdio")
+        else:
+            server.run("streamable-http", host=args.host, port=args.port, streamable_http_path=HTTP_PATH,
+                       stateless_http=True, json_response=True)
     except KeyboardInterrupt:
         pass  # Ctrl+C on a manually started server: a normal stop, not an error
 

@@ -59,6 +59,7 @@ pages = st.navigation([
     st.Page("app_pages/eval_runs.py", title="Evaluation runs", icon=":material/analytics:"),
     st.Page("app_pages/eval_run_detail.py", title="Run detail", icon=":material/table_view:", visibility="hidden"),
     st.Page("app_pages/infrastructure.py", title="Infrastructure & Setup", icon=":material/dns:"),
+    st.Page("app_pages/mcp_page.py", title="MCP server", icon=":material/hub:"),
     st.Page("app_pages/about.py", title="About / Architecture", icon=":material/account_tree:"),
 ])
 pages.run()

@@ -156,6 +156,85 @@ class RoleStartupTests(_InfrastructureGuard):
         self.assertNotIn("Traceback", err.getvalue())
 
 
+HTTP_OPTIONS = {"streamable_http_path": "/mcp", "stateless_http": True, "json_response": True}
+
+
+class TransportTests(_InfrastructureGuard):
+    """--transport selects how the SAME server (build_server) is served; the server itself never changes."""
+
+    def _main(self, *args):
+        server = MagicMock()
+        out, err = io.StringIO(), io.StringIO()
+        with patch("mcp_server.build_server", return_value=server) as build, \
+                redirect_stdout(out), redirect_stderr(err):
+            try:
+                mcp_server.main(list(args))
+                code = None
+            except SystemExit as exit_:
+                code = exit_.code
+        return server, build, code, out.getvalue(), err.getvalue()
+
+    def test_explicit_stdio_is_the_same_as_the_default(self):
+        server, _, code, _, _ = self._main("--transport", "stdio", "--role", "employee")
+        self.assertIsNone(code)
+        server.run.assert_called_once_with("stdio")
+
+    def test_streamable_http_uses_the_loopback_defaults_and_the_fixed_stateless_json_options(self):
+        server, build, code, out, _ = self._main("--transport", "streamable-http", "--role", "employee")
+        self.assertIsNone(code)
+        build.assert_called_once_with("employee")
+        server.run.assert_called_once_with("streamable-http", host="127.0.0.1", port=8000, **HTTP_OPTIONS)
+        self.assertEqual(out, "")
+        self.assertNoInfrastructureCall()
+
+    def test_streamable_http_passes_a_loopback_host_and_port_through(self):
+        for host in ("127.0.0.1", "localhost", "::1"):
+            with self.subTest(host=host):
+                server, _, code, _, _ = self._main("--transport", "streamable-http", "--role", "manager",
+                                                   "--host", host, "--port", "8001")
+                self.assertIsNone(code)
+                server.run.assert_called_once_with("streamable-http", host=host, port=8001, **HTTP_OPTIONS)
+
+    def test_a_non_loopback_host_is_refused_before_the_server_is_built(self):
+        # Exactly the hosts for which the SDK turns on its DNS-rebinding protection by itself.
+        for host in ("0.0.0.0", "::", "192.168.1.10", "127.0.0.2", "example.com", ""):
+            with self.subTest(host=host):
+                server, build, code, out, err = self._main("--transport", "streamable-http",
+                                                           "--role", "employee", "--host", host)
+                self.assertEqual(code, 2)
+                self.assertEqual(out, "")
+                self.assertIn("loopback", err)
+                build.assert_not_called()
+                server.run.assert_not_called()
+
+    def test_an_unknown_transport_is_refused(self):
+        for transport in ("sse", "http", "STDIO"):
+            with self.subTest(transport=transport):
+                server, build, code, _, err = self._main("--transport", transport, "--role", "employee")
+                self.assertEqual(code, 2)
+                self.assertIn("--transport", err)
+                build.assert_not_called()
+
+    def test_an_unsupported_role_is_refused_on_http_too(self):
+        with patch("mcp_server.MCPServer") as server_class:
+            for role in INVALID_ROLES:
+                with self.subTest(role=role):
+                    out, err = io.StringIO(), io.StringIO()
+                    with redirect_stdout(out), redirect_stderr(err), self.assertRaises(SystemExit) as exit_:
+                        mcp_server.main(["--transport", "streamable-http", "--role", role])
+                    self.assertEqual(exit_.exception.code, 2)
+                    self.assertIn("unsupported role", err.getvalue())
+            server_class.assert_not_called()
+
+    def test_ctrl_c_stops_the_http_server_quietly(self):
+        server = MagicMock()
+        server.run.side_effect = KeyboardInterrupt
+        err = io.StringIO()
+        with patch("mcp_server.build_server", return_value=server), redirect_stderr(err):
+            mcp_server.main(["--transport", "streamable-http", "--role", "employee"])
+        self.assertNotIn("Traceback", err.getvalue())
+
+
 class CapabilitiesTests(_InfrastructureGuard):
     def _capabilities(self, role="employee") -> dict:
         result = _call(mcp_server.build_server(role), lambda c: c.call_tool("get_rag_capabilities", {}))
@@ -231,6 +310,11 @@ class ProtocolMetadataTests(_InfrastructureGuard):
     def test_server_name_is_the_neutral_public_name(self):
         info, _ = _call(mcp_server.build_server("employee"), self._initialize)
         self.assertEqual(info.name, "novaops-knowledge-base")
+
+    def test_server_version_is_the_explicit_server_version(self):
+        self.assertEqual(mcp_server.SERVER_VERSION, "0.2.0")
+        info, _ = _call(mcp_server.build_server("employee"), self._initialize)
+        self.assertEqual(info.version, "0.2.0")
 
     def test_server_info_never_carries_the_configured_collection(self):
         for collection in ("test-kb-collection-7f3a", "novaops-knowledge-base-collection"):

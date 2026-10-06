@@ -7,7 +7,9 @@ Scanned: the project's own Python modules (root and ui/). Skipped: tests/,
 hidden directories (.venv, .git, .idea, ...), caches, git-ignored generated or
 third-party folders (runs/, logs/, reference/). The two MCP adapters — the
 server (mcp_server.py) and the demo client (mcp_client.py) — are the only modules
-that may import `mcp`; nothing may import either of them.
+that may import `mcp`. Nothing imports the server; only the dashboard's MCP page
+(ui/app_pages/mcp_page.py) imports the client, and that page imports neither `mcp`
+nor `anyio`.
 """
 import ast
 import re
@@ -17,6 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SKIPPED_DIRS = {"tests", "__pycache__", "runs", "logs", "reference"}
 MCP_ADAPTERS = frozenset({"mcp_server.py", "mcp_client.py"})  # the only modules allowed to import `mcp`
+MCP_CLIENT_USERS = frozenset({"ui/app_pages/mcp_page.py"})  # the only module allowed to import mcp_client
 
 
 def _requirement_lines(path: Path) -> list[str]:
@@ -74,8 +77,12 @@ class ImportBoundaryTests(unittest.TestCase):
         self.assertFalse([p for p in scanned if p.startswith(("tests/", ".venv/", "reference/"))])
 
     def _offenders(self, package: str, allowed: frozenset[str] = frozenset()) -> list[str]:
-        return [path.relative_to(ROOT).as_posix() for path in self.modules
-                if path.name not in allowed and _imports_package(path.read_text(encoding="utf-8"), package)]
+        offenders = []
+        for path in self.modules:
+            relative = path.relative_to(ROOT).as_posix()
+            if relative not in allowed and _imports_package(path.read_text(encoding="utf-8"), package):
+                offenders.append(relative)
+        return offenders
 
     def test_no_module_except_the_mcp_adapters_imports_mcp(self):
         self.assertEqual(self._offenders("mcp", allowed=MCP_ADAPTERS), [])
@@ -83,8 +90,13 @@ class ImportBoundaryTests(unittest.TestCase):
     def test_no_module_imports_the_mcp_server(self):
         self.assertEqual(self._offenders("mcp_server"), [])
 
-    def test_no_module_imports_the_mcp_client(self):
-        self.assertEqual(self._offenders("mcp_client"), [])
+    def test_only_the_dashboards_mcp_page_imports_the_mcp_client(self):
+        self.assertEqual(self._offenders("mcp_client", allowed=MCP_CLIENT_USERS), [])
+        self.assertTrue(_imports_package((ROOT / "ui/app_pages/mcp_page.py").read_text(encoding="utf-8"),
+                                         "mcp_client"))  # the allow-list is not stale
+
+    def test_no_module_except_the_mcp_client_imports_anyio(self):
+        self.assertEqual(self._offenders("anyio", allowed=frozenset({"mcp_client.py"})), [])
 
 
 class ImportDetectionTests(unittest.TestCase):

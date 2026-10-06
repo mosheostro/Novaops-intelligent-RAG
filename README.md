@@ -2,7 +2,7 @@
 
 A filtered and reranked retrieval-augmented generation (RAG) pipeline over the NovaOps knowledge base, built on Amazon Bedrock and Amazon OpenSearch Serverless. It combines semantic vector retrieval, a hard audience/access boundary, soft subject-based metadata filtering, listwise reranking with a language model, adaptive context selection and grounded answer generation. An evaluation harness measures each mechanism on its own and in combination, so the effect of every stage is visible rather than assumed.
 
-> **Status: implemented.** The retrieval pipeline, the five-configuration evaluation harness (with saved run artifacts) and a Streamlit dashboard (chat + evaluation laboratory) run against the live collection. An MCP server (Stage 1: STDIO transport, three tools and one resource) and a minimal MCP client expose the same question-answering use case to MCP clients — see [MCP server (Stage 1)](#mcp-server-stage-1). The current architecture is documented in [`docs/architecture.md`](docs/architecture.md); an HTTP API is a future consumer, not implemented.
+> **Status: implemented.** The retrieval pipeline, the five-configuration evaluation harness (with saved run artifacts) and a Streamlit dashboard (chat + evaluation laboratory) run against the live collection. An MCP server (STDIO and Streamable HTTP; three tools and one resource), a command-line MCP client and an MCP page in the dashboard expose the same question-answering use case over the Model Context Protocol — see [MCP server](#mcp-server). The current architecture is documented in [`docs/architecture.md`](docs/architecture.md); a REST/HTTP API is a future consumer, not implemented.
 
 ## Architecture
 
@@ -72,6 +72,7 @@ The dashboard is behind a password: set `APP_PASSWORD` in your local `.env` (or 
 - **Chat**: ask a custom question as a demo role (employee/manager — not authentication), pick one of the five configurations and an optional cutoff date, optionally score with judges, and inspect the sources and the full pipeline trace.
 - **Evaluation runs**: configure an experiment — pick test cases from `data/eval_questions.jsonl` by id, one or more of the five configurations, and an optional cutoff — review the run summary and estimated model calls, confirm the cost, and launch it as a separate `eval.py` subprocess; browse saved runs. Each test case runs as its own dataset audience; there is no audience override and no access-filter control.
 - **Run detail**: the per-configuration summary, a questions × configurations matrix, and a per-question drill-down.
+- **MCP server**: an MCP client of a separately running MCP server (see [MCP server](#mcp-server)) — discovery, health check and questions over the protocol. It never starts or stops the server.
 
 ## Project structure
 
@@ -92,10 +93,10 @@ ask.py               One custom question through one configuration (used by the 
 runs.py              Saved run artifacts under runs/ and the eval.py subprocess launcher
 logging_setup.py     Centralized logging configuration (called only from eval.py main())
 manage.py            Collection status / teardown (control plane; typed confirmation); collection_health()
-mcp_server.py        MCP server (STDIO): ask_rag, health_check, get_rag_capabilities, rag://subjects
-mcp_client.py        Minimal MCP client: starts the server over STDIO and exercises its surface
+mcp_server.py        MCP server (STDIO or Streamable HTTP): ask_rag, health_check, get_rag_capabilities, rag://subjects
+mcp_client.py        MCP client: CLI (discover / health / ask) and the synchronous functions the dashboard page uses
 failures.py          Transport-independent failure categories used by the MCP server
-ui/                  Streamlit dashboard (app.py, app_pages/, components/, access.py)
+ui/                  Streamlit dashboard (app.py, app_pages/, components/, access.py); app_pages/mcp_page.py is the MCP client page
 .streamlit/          Dashboard theme
 tests/               Unit tests — no network, all AWS calls mocked
 data/                The NovaOps corpus and the evaluation questions
@@ -162,19 +163,46 @@ python -m unittest
 
 The MCP tests need the optional dependency (`pip install -r requirements-mcp.txt`); without it they are skipped with that instruction, and the MCP dependency-boundary tests still run.
 
-## MCP server (Stage 1)
+## MCP server
 
-`mcp_server.py` exposes the knowledge base to MCP clients (MCP Inspector, Claude Code, other agent environments). It is a thin adapter: it calls the same `ask.ask()` use case as the dashboard and the read-only `manage.collection_health()`; retrieval, access control, reranking and judging stay in the core, which never imports the MCP SDK.
+`mcp_server.py` exposes the knowledge base to MCP clients (MCP Inspector, Claude Code, other agent environments). It is a thin adapter: it calls the same `ask.ask()` use case as the dashboard and the read-only `manage.collection_health()`; retrieval, access control, reranking and judging stay in the core, which never imports the MCP SDK. The server identifies itself as `novaops-knowledge-base`, version `0.2.0`. Stage 1 added the server over STDIO; Stage 2 added Streamable HTTP, the command-based client and the dashboard's MCP page.
 
 ```bash
-pip install -r requirements-mcp.txt                 # optional dependency: the MCP SDK (mcp>=2.3,<3)
-python mcp_server.py --role employee                # or: python -m mcp_server --role manager
-python mcp_client.py --role employee --question "What benefits are available to employees?"
+pip install -r requirements-mcp.txt      # optional dependency: the MCP SDK (mcp>=2.3,<3)
 ```
 
-Run both from the project root. The server speaks MCP over **STDIO**: stdout carries only JSON-RPC, and logs go to stderr. It is normally started by an MCP client rather than by hand (stop a manual run with Ctrl+C). `mcp_client.py` starts the server itself, runs discovery (lists tools and resources, calls `get_rag_capabilities`, reads `rag://subjects`), then calls `health_check` and one `ask_rag`, and prints the results as JSON. If the server refuses to start, the client prints the server's own reason on one line.
+**Transports.** One server, two transports; the tools, resource and responses are identical on both. Run everything from the project root.
 
-**Role.** `--role` is required: `employee` or `manager`, validated by the same access filter the pipeline uses. There is no default and no fallback; an unsupported role stops the server before it serves anything. The role is fixed for the life of the process and is not a tool argument. It is a **server role, not authentication**: it says nothing about who the MCP client is, and whoever starts the process chooses it.
+- **STDIO** (default): `python mcp_server.py --role employee`. An MCP client normally starts this process itself; stdout carries only JSON-RPC, and logs go to stderr.
+- **Streamable HTTP**: `python mcp_server.py --transport streamable-http --role employee [--port 8000]` serves `http://127.0.0.1:8000/mcp` — one fixed `/mcp` endpoint, stateless, plain JSON responses. It is **loopback-only**: `--host` accepts only `127.0.0.1` (default), `localhost` or `::1`, and anything else is refused at startup, because the HTTP transport has no authentication. On those hosts the SDK's DNS-rebinding protection rejects a foreign `Host` or `Origin` header.
+
+Stop a manually started server with Ctrl+C.
+
+**Client.** `mcp_client.py` runs one MCP interaction per command, against a running HTTP server (`--url`) or a STDIO server it starts for that command (`--role`):
+
+```bash
+python mcp_client.py discover --url http://127.0.0.1:8000/mcp        # server name and version, transport, tools and
+                                                                     # resources with their descriptions, capabilities,
+                                                                     # subjects — no AWS call
+python mcp_client.py health --url http://127.0.0.1:8000/mcp          # health_check
+python mcp_client.py ask "How does PTO accrue?" --url http://127.0.0.1:8000/mcp \
+       [--config "filter + rerank dynamic"] [--judge] [--updated-on-or-after 2025-01-31]
+python mcp_client.py discover --role manager                         # the same over STDIO
+```
+
+Output is readable text; `--json` prints exactly what the server returned. Errors are one line: an invalid URL or invocation is a usage error (exit 2) that says how to fix it; an unreachable server, a wrong endpoint path, a timeout, a dropped connection or a non-MCP endpoint is reported as such (exit 1, with the start command when nothing is listening); a tool error prints the server's own safe message. If a STDIO server refuses to start, the client prints the server's reason.
+
+**Local demo: separate processes.** The MCP server and the dashboard are independent processes; the dashboard never starts, stops or supervises the server.
+
+```bash
+python mcp_server.py --transport streamable-http --role employee               # terminal 1
+python mcp_server.py --transport streamable-http --role manager --port 8001    # terminal 2 (optional)
+streamlit run ui/app.py                                                        # terminal 3
+```
+
+On the dashboard's **MCP server** page, enter `http://127.0.0.1:8000/mcp` (or `:8001` for the manager server) and press **Connect / Refresh**. The page is an MCP client: it shows the server's identity, role, tools, resources, subjects and capabilities, runs the health check and asks questions through `ask_rag` — never through the dashboard's own RAG calls. It accepts loopback URLs only, calls nothing until you connect, and waits up to 120 seconds for a response.
+
+**Role.** `--role` is required: `employee` or `manager`, validated by the same access filter the pipeline uses. There is no default and no fallback; an unsupported role stops the server before it serves anything. The role is fixed for the life of the process and is not a tool argument — over HTTP, every caller of a server gets that server's role, so run one server per role. It is a **server role, not authentication**: it says nothing about who the MCP client is, and whoever starts the process chooses it. The dashboard's sidebar role does not change it.
 
 | Surface | What it does |
 |---|---|
@@ -183,17 +211,20 @@ Run both from the project root. The server speaks MCP over **STDIO**: stdout car
 | `get_rag_capabilities` | The configured role, the five configurations and what each does, the default, judging, security behaviour, input options and the subject vocabulary. |
 | `rag://subjects` | The subject vocabulary (`application/json`). |
 
+That is the whole surface: no `get_subjects` tool, no prompts, no resource templates. The subject vocabulary appears both in `get_rag_capabilities` (for clients that use tools only) and as the `rag://subjects` resource; both come from the same constant.
+
 **What a response contains.** `ask_rag` returns a deliberate projection of the domain result: the answer, configuration, role, status (`selected` / `not_found`), planned subjects, cutoff, the number of candidates considered, the selected sources as metadata only (`rank` — 1-based —, `source`, `corpus`, `subjects`, `last_updated`, `rerank_score`), a `security_audit` and, when requested, the judgement. It never contains chunk text, vector scores or the question.
 
 **Security and privacy.** The access filter is applied from the server's role on every request. If the security audit finds content outside the role's permitted audience, the answer, sources and judgement are withheld; the response reports only that a violation happened, how many sources it flagged and a fixed explanation — never which documents. Protocol output (including the server name) carries no collection name, endpoint, index name, region or account identifiers, and neither do the health and request logs. Service failures come back as fixed messages (`service_unavailable`, `service_timeout`, `unsupported_role`); unexpected errors as a generic tool error. The server's stderr is operator output: on a security violation the core's audit log names the flagged files there, and an unexpected error is logged with its traceback.
 
-Limitations of Stage 1: STDIO only (no HTTP transport), no authentication (the role is a startup setting), no server-side request timeout — a first call after the knowledge base has been idle can take noticeably longer, so give MCP clients a generous request timeout, and use `health_check` to warm it up.
+Limitations: no authentication of MCP callers, deliberately (the role is a startup setting), which is why the HTTP transport is loopback-only; no REST API; no server-side request timeout — a first call after the knowledge base has been idle can take noticeably longer, so give MCP clients a generous request timeout, and use `health_check` to warm it up.
 
 ## Deployment (Streamlit Community Cloud)
 
 - Streamlit Community Cloud has no `.env`: supply the six required variables (and any optional ones) plus `APP_PASSWORD` as the app's **Secrets**, e.g. `AWS_REGION = "<your-region>"` in TOML.
 - `ui/app.py` bridges those secrets into the environment before `config.py` validates it, without overwriting values that are already set (precedence: shell environment > local `.env` > Streamlit secrets). `config.py` itself stays independent of Streamlit.
 - `APP_PASSWORD` protects the whole dashboard. It is a basic shared-password gate for a demo — not user authentication or authorization. The sidebar Employee/Manager role remains a demo retrieval-audience selector.
+- The deployment installs `requirements.txt` only, without the MCP SDK; there the MCP server page explains how to install it locally instead of failing. The rest of the dashboard is unaffected.
 - Never commit real credentials or passwords: `.env` and `.streamlit/secrets.toml` are git-ignored; `.env.example` holds placeholders only.
 
 ## Security
