@@ -66,7 +66,9 @@ Current architecture: `docs/architecture.md` (wins over the older design records
   config, optional cutoff date, optional judges, sources + full pipeline trace), Evaluation runs (launcher +
   saved runs), Run detail (summary, questions × configs matrix, per-config drill-down), Infrastructure & Setup,
   MCP server (`app_pages/mcp_page.py`: an MCP client of a separately running server — Connect / Refresh,
-  discovery, health, ask_rag; loopback URLs only; 120 s read timeout; degrades without the SDK), About /
+  discovery, health, ask_rag; loopback URLs only; 120 s read timeout; degrades without the SDK), API & MCP
+  Help (`app_pages/api_mcp_help.py`: a static manual for both interfaces — start, try, troubleshoot; imports
+  only Streamlit; its commands, paths, tool names and ports are checked against the real contracts), About /
   Architecture (read-only visual summary of docs/project-overview.md; static, no backend calls; includes the
   MCP and REST API diagrams). The dashboard is never a REST client.
 
@@ -150,5 +152,6 @@ Current architecture: `docs/architecture.md` (wins over the older design records
   calls under way. Its warnings reach stderr via Python's last-resort handler (no `configure_logging()`).
   A security violation and a 504 cannot be produced against the live backend; both are covered by mocked tests.
   The live manager-playbook assertion depends on the current index contents.
-- Ports: REST defaults to 8001, which the README's MCP manager example also uses — pick different ports when
-  running both.
+- Ports in the docs and on the help page: REST 8001 (employee) / 8002 (manager), MCP 8000 / 8010.
+- MCP Inspector (2.9.0) CLI cannot pass a STDIO server's own flags (`--role`) through, so the help page shows
+  Inspector over Streamable HTTP only; STDIO is shown with `mcp_client.py --role`.

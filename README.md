@@ -73,6 +73,7 @@ The dashboard is behind a password: set `APP_PASSWORD` in your local `.env` (or 
 - **Evaluation runs**: configure an experiment — pick test cases from `data/eval_questions.jsonl` by id, one or more of the five configurations, and an optional cutoff — review the run summary and estimated model calls, confirm the cost, and launch it as a separate `eval.py` subprocess; browse saved runs. Each test case runs as its own dataset audience; there is no audience override and no access-filter control.
 - **Run detail**: the per-configuration summary, a questions × configurations matrix, and a per-question drill-down.
 - **MCP server**: an MCP client of a separately running MCP server (see [MCP server](#mcp-server)) — discovery, health check and questions over the protocol. It never starts or stops the server.
+- **API & MCP Help**: a manual for the REST API and the MCP server — how to start them and try them with curl, `mcp_client.py` or MCP Inspector. Documentation only: it connects to nothing.
 
 ## Project structure
 
@@ -205,11 +206,11 @@ Output is readable text; `--json` prints exactly what the server returned. Error
 
 ```bash
 python mcp_server.py --transport streamable-http --role employee               # terminal 1
-python mcp_server.py --transport streamable-http --role manager --port 8001    # terminal 2 (optional)
+python mcp_server.py --transport streamable-http --role manager --port 8010    # terminal 2 (optional)
 streamlit run ui/app.py                                                        # terminal 3
 ```
 
-On the dashboard's **MCP server** page, enter `http://127.0.0.1:8000/mcp` (or `:8001` for the manager server) and press **Connect / Refresh**. The page is an MCP client: it shows the server's identity, role, tools, resources, subjects and capabilities, runs the health check and asks questions through `ask_rag` — never through the dashboard's own RAG calls. It accepts loopback URLs only, calls nothing until you connect, and waits up to 120 seconds for a response.
+On the dashboard's **MCP server** page, enter `http://127.0.0.1:8000/mcp` (or `:8010` for the manager server) and press **Connect / Refresh**. The page is an MCP client: it shows the server's identity, role, tools, resources, subjects and capabilities, runs the health check and asks questions through `ask_rag` — never through the dashboard's own RAG calls. It accepts loopback URLs only, calls nothing until you connect, and waits up to 120 seconds for a response.
 
 **Role.** `--role` is required: `employee` or `manager`, validated by the same access filter the pipeline uses. There is no default and no fallback; an unsupported role stops the server before it serves anything. The role is fixed for the life of the process and is not a tool argument — over HTTP, every caller of a server gets that server's role, so run one server per role. It is a **server role, not authentication**: it says nothing about who the MCP client is, and whoever starts the process chooses it. The dashboard's sidebar role does not change it.
 
@@ -238,7 +239,7 @@ python api_server.py --role employee                      # http://127.0.0.1:800
 python api_server.py --role manager --port 8002           # a second server for the other role
 ```
 
-The interactive OpenAPI page at `http://127.0.0.1:8001/docs` (and `/openapi.json`) is the authoritative contract. Stop a server with Ctrl+C. The MCP manager example above also uses port 8001: pick different ports if you run both.
+The interactive OpenAPI page at `http://127.0.0.1:8001/docs` (and `/openapi.json`) is the authoritative contract. Stop a server with Ctrl+C.
 
 | Endpoint | What it does |
 |---|---|
