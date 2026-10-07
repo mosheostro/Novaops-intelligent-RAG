@@ -1,6 +1,6 @@
 # Architecture — current state
 
-**Date:** 2026-10-06 (MCP adapter: Stage 1 STDIO and Stage 2 Streamable HTTP + dashboard MCP page; the rest unchanged since 2026-09-26)
+**Date:** 2026-10-07 (REST API adapter, §15, and the shared public views; MCP adapter 2026-10-06; the rest unchanged since 2026-09-26)
 **Scope:** This document describes the system **as implemented today**. Anything that does not exist yet is marked **FUTURE**.
 `docs/architecture-discovery.md` is the original design and discovery record (index inspection, the decisions and their reasoning). `docs/evaluation-domain-model.md` is the design record for `models.py`. `docs/security-concepts.md` is the detailed access-control reference. Where those documents and the code disagree, this document and the code win.
 
@@ -9,14 +9,14 @@
 ## 1. Layers and boundaries
 
 ```
-                 CURRENT consumers                                                  FUTURE (not implemented)
-   eval.py main() (CLI)   ui/ (Streamlit Dashboard)   mcp_server.py (MCP: STDIO · HTTP)    REST/HTTP API · other UIs
-          │                        │      ▲                   │
-          │                        │      └ MCP page ── mcp_client.py ── Streamable HTTP ┘  (an MCP client, §14)
-          │                        │                          │
-          │         ┌──────────────┴──────────────────────────┴──┐
-          │         │ ask.ask()   runs.*   manage.collection_health() │   application / use-case boundary
-          │         └──────────────┬─────────────────────────────┘
+                 CURRENT consumers                                                                   FUTURE
+   eval.py main() (CLI)   ui/ (Streamlit Dashboard)   mcp_server.py (MCP: STDIO · HTTP)   api_server.py (REST)   other UIs
+          │                        │      ▲                   │                            │
+          │                        │      └ MCP page ── mcp_client.py ── Streamable HTTP ┘   │  (an MCP client, §14)
+          │                        │                          │  public_views.py (§15)     │
+          │         ┌──────────────┴──────────────────────────┴────────────────────────────┴─┐
+          │         │ ask.ask()   runs.*   manage.collection_health()                         │   application / use-case boundary
+          │         └──────────────┬──────────────────────────────────────────────────────────┘
           ▼                        ▼
    eval.evaluate() / evaluate_question()                 evaluation runner + shared pipeline steps
           │
@@ -34,11 +34,13 @@
   - `ask.ask()`: one custom question answered by one configuration.
   - `eval.evaluate()`: one experiment — questions × selected configurations (default all five) × optional cutoff.
   - `runs.py`: saved evaluation artifacts and the run launcher.
-- **Consumers** — the CLI (`eval.py main()`: stdout report, optional `--save`), the Dashboard (`ui/`) and the MCP server (`mcp_server.py`, §14).
+- **Consumers** — the CLI (`eval.py main()`: stdout report, optional `--save`), the Dashboard (`ui/`), the MCP server (`mcp_server.py`, §14) and the REST API (`api_server.py`, §15).
   - The Dashboard only calls `ask.ask()` and `runs.*` and renders the returned models. It never calls OpenSearch or Bedrock itself, and it holds no pipeline logic.
   - The MCP server only calls `ask.ask()` and `manage.collection_health()` and returns projections of their results.
+  - The REST API calls the same two use cases and returns the same projections; both adapters take them from `public_views.py`.
   - The Dashboard's **MCP server** page is the exception to "calls the use cases in-process": it is an MCP *client* (`mcp_client.py` → Streamable HTTP → a separately running `mcp_server.py`) and never calls the core itself (§10, §14).
-  - The architecture stays open for a REST/HTTP API or another UI. Each would call the same use cases and serialize the same models. **Neither exists today.**
+  - The Dashboard is not a REST client: it keeps calling the use cases in-process.
+  - The architecture stays open for another UI or client. It would call the same use cases; if it leaves the process, it returns the shared public views rather than serializing the domain models (§7). **None exists today.**
 - **Bedrock boundary** — `client.py` is the only module that constructs the Bedrock runtime client. `ask.py`, `runs.py` and `ui/` construct none. `manage.py` owns the OpenSearch Serverless control-plane client, a documented exception that does not cover Bedrock.
 
 ---
@@ -164,7 +166,7 @@ A custom question is never written into a question set or a saved run, and the D
 - Every model is frozen. The pipeline builds them directly; there is no internal dict stage.
 - The one narrow exception is `eval.rerank_candidates`, which adapts to `reranker.rerank_all`'s fixed dict-in/dict-out contract (`{"text": ...}`) and maps the results back by identity.
 - JSON appears only at external boundaries: `EvaluationResult.model_dump_json()` for saved runs and `model_validate_json()` to load them.
-- The same models serve the CLI report, the Dashboard renderers, the tests, and a FUTURE API, which would serialize them unchanged. The MCP adapter (§14) returns explicit projections of them instead.
+- The same models serve the CLI report, the Dashboard renderers and the tests. The adapters that leave the process — MCP (§14) and the REST API (§15) — never serialize them: they return the explicit projections in `public_views.py`. An earlier version of this document said a future API would serialize the models unchanged; that was rejected, because `AskResult` carries chunk text, vector scores and the sources a failed security audit flagged.
 - `ConfigurationResult` (eval) and `AskResult` (chat) share `RetrievalResult` and `SelectionResult`, so the Dashboard renders both with the same components.
 - No repository, service, mapper or factory layers exist, and none are needed.
 
@@ -187,7 +189,7 @@ A custom question is never written into a question set or a saved run, and the D
 - Stays in `eval.py`: `evaluate_question`, `evaluate`, `run_config`, `score_answer`, `summarize`, `load_questions`, `report`, `main`, `RUNS_DIR`, `save_result`.
 - `ask.py` and `eval.py` would both import from `pipeline.py`.
 - No new abstraction, no class, no behavior change.
-- Deferred until a second reason appears, e.g. an API consumer that must not import the evaluation module.
+- Deferred until a second reason appears, e.g. an API consumer that must not import the evaluation module. The REST API did not create one: like the MCP server it calls `ask.ask()` and imports `eval` only through it.
 
 ---
 
@@ -261,7 +263,7 @@ The Dashboard is an **evaluation laboratory and presentation layer**: it exposes
   - is idempotent via a marker on its own handlers;
   - pins `boto3`, `botocore`, `urllib3` and `opensearch` to WARNING.
   It is called **only** from `eval.py main()`; importing any module never configures logging.
-- **Logger hierarchy** — every module uses `logging.getLogger(__name__)`: `eval`, `ask`, `retrieval`, `planner`, `reranker`, `client`, `config`, `ui.app_pages.*`. There is no custom hierarchy.
+- **Logger hierarchy** — every module uses `logging.getLogger(__name__)`: `eval`, `ask`, `retrieval`, `planner`, `reranker`, `client`, `config`, `mcp_server`, `api_server`, `public_views`, `ui.app_pages.*`. There is no custom hierarchy.
 - **Storage** —
   - `logs/eval.log` (gitignored; the path is relative to the working directory), written by CLI runs and by launcher subprocesses;
   - `runs/<id>.log`, the full stdout/stderr of a launcher run: the report plus WARNING+ log lines.
@@ -333,18 +335,52 @@ ask.ask()  ·  manage.collection_health()      application use cases (unchanged 
   - Streamable HTTP: `stateless_http=True`, `json_response=True`, fixed path `/mcp`, `--host` (default `127.0.0.1`) and `--port` (default 8000). Only `127.0.0.1`, `localhost` and `::1` are accepted (exit 2 otherwise) — exactly the hosts for which the SDK enables its DNS-rebinding protection (a foreign `Host` gets 421, a foreign `Origin` 403). There is no authentication, so remote binding is refused rather than configurable. One process per role: every HTTP caller gets that server's role.
   - Tool failures are the same JSON-RPC results with `isError` on both transports (HTTP 200); nothing is mapped to HTTP status codes.
 - **Role.** `--role` is required and validated at startup by `retrieval.access_filter()`; an unsupported role exits (code 2) before anything is served. The role is fixed for the process and is not a tool argument — a server role, not authentication or client identity.
-- **`ask_rag`.** Arguments: `question` (whitespace-stripped, 1–2000 characters — `MAX_QUESTION_CHARS`, an MCP boundary guard rather than an `ask()` rule), `config` (`ConfigName`, default `models.DEFAULT_CONFIG` = `filter + rerank dynamic`, shared with the Chat page), `judge` (default `false`), `updated_on_or_after` (optional ISO date). Invalid input is rejected by the SDK's schema validation before the use case runs.
-- **Response projection (`AskRagResult`).** The answer, `config`, `role`, `status` (`selected` / `not_found`), `planned_subjects`, `cutoff`, `retrieval.candidates_considered`, `sources` (metadata only; `rank` is **1-based**, derived from the 0-based domain `final_rank`), `security_audit` (`violation`, `violating_source_count`, `explanation`) and `judgement`. Never chunk text, vector scores, `top_k_requested` or the question.
+- **`ask_rag`.** Arguments: `question` (whitespace-stripped, 1–2000 characters — `MAX_QUESTION_CHARS`, an adapter boundary guard shared with the REST API rather than an `ask()` rule), `config` (`ConfigName`, default `models.DEFAULT_CONFIG` = `filter + rerank dynamic`, shared with the Chat page), `judge` (default `false`), `updated_on_or_after` (optional ISO date). Invalid input is rejected by the SDK's schema validation before the use case runs.
+- **Response projection (`AskRagResult`, in `public_views.py`, shared with the REST API).** The answer, `config`, `role`, `status` (`selected` / `not_found`), `planned_subjects`, `cutoff`, `retrieval.candidates_considered`, `sources` (metadata only; `rank` is **1-based**, derived from the 0-based domain `final_rank`), `security_audit` (`violation`, `violating_source_count`, `explanation`) and `judgement`. Never chunk text, vector scores, `top_k_requested` or the question.
 - **Security violation.** When `SecurityAudit.violation` is true the projection withholds the answer (fixed `WITHHELD_ANSWER`), the sources (`[]`) and the judgement (`null`), and reports only the count and a fixed explanation. The domain `SecurityAudit` keeps the file names internally. Judges requested for such a request have already run inside `ask()`.
 - **Health (`HealthResult`).** `ready` (ACTIVE and index present and chunk_count > 0), `collection_state` (control-plane status or `MISSING`), `index_present`, `chunk_count`, `data_plane_reachable` (`null` when not checked). An allow-list over `manage.CollectionHealth`: the endpoint and error text stay with the CLI. A missing, non-active or unreachable collection is a normal result.
-- **Failures.** `failures.classify_failure()` → `unsupported_role` · `service_timeout` (checked first) · `service_unavailable` (OpenSearch/botocore errors and the `SystemExit` that endpoint resolution raises) · `internal`. The MCP layer turns the first three into fixed `ToolError` messages and lets `internal` reach the SDK's generic error, so no exception text reaches the client. Business outcomes (`not_found`, a role-filtered answer, a violation) are results, not errors. A future HTTP API would map the same categories to status codes.
+- **Failures.** `failures.classify_failure()` → `unsupported_role` · `service_timeout` (checked first) · `service_unavailable` (OpenSearch/botocore errors and the `SystemExit` that endpoint resolution raises) · `internal`. The MCP layer turns the first three into fixed `ToolError` messages and lets `internal` reach the SDK's generic error, so no exception text reaches the client. Business outcomes (`not_found`, a role-filtered answer, a violation) are results, not errors. The REST API maps the same categories to HTTP status codes (§15).
 - **Lifecycle.** No infrastructure access at startup or for capabilities/subjects. The OpenSearch client for `ask_rag` is created lazily on first use and cached only after success. Synchronous tools run on SDK worker threads; there is no server-side timeout, and a cancelled request's work finishes in its thread. Ctrl+C stops a manually started server quietly.
 - **Logging.** The SDK logs to stderr; over STDIO stdout is protocol only (over HTTP, uvicorn's access log goes to stdout). The health logs carry states and exception types, not names or error text; the request log carries the configuration, role and chunk count, never the question or answer.
-- **Dependencies.** The SDK is optional (`requirements-mcp.txt`: `mcp>=2.3,<3`); `requirements.txt` and the dashboard deployment do not include it. Only `mcp_server.py` and `mcp_client.py` import `mcp`; only `mcp_client.py` imports `anyio`; nothing imports `mcp_server`; only `ui/app_pages/mcp_page.py` imports `mcp_client`. Enforced by `tests/test_mcp_boundary.py`.
+- **Dependencies.** The SDK is optional (`requirements-mcp.txt`: `mcp>=2.3,<3`); `requirements.txt` and the dashboard deployment do not include it. Only `mcp_server.py` and `mcp_client.py` import `mcp`; only `mcp_client.py` imports `anyio`; nothing imports `mcp_server`; only `ui/app_pages/mcp_page.py` imports `mcp_client`; `public_views.py` imports no transport package and only the two adapters import it. Enforced by `tests/test_mcp_boundary.py`; `tests/test_mcp_contract.py` pins the published MCP contract against a recorded snapshot.
 - **Client (`mcp_client.py`).** Imports no project module and validates nothing of the server's domain; it passes the role through and shows what the server returns.
   - Connections: `connect(role)` starts a STDIO server; `connect_http(url, read_timeout=None)` connects to a running one — by default with the SDK's own HTTP client and timeouts, or with only the read timeout replaced. Kept separate on purpose.
   - Synchronous functions for non-async callers (the dashboard page): `describe(url)`, `check_health(url)`, `ask(url, question, …)`, each one short HTTP session, plain dicts in and out.
   - Errors: `check_url()` raises `InvalidServerUrlError` before connecting (scheme, host, port, missing path — with the fix). Transport failures become `ServerUnavailableError` with a `kind` — `unreachable`, `timeout`, `not_found` (HTTP 404: wrong path), `not_mcp`, `dropped` — and a message built from fixed wording and the URL's scheme, host, port and path (never credentials, query or exception text). `ToolCallError` carries the server's own safe message. Any other exception is a programming error and is not disguised.
   - CLI: `discover` / `health` / `ask QUESTION [--config] [--judge] [--updated-on-or-after]`, each with `--url URL` (HTTP) or `--role ROLE` (STDIO, a server started for that command) and `--json`. Text output is a view of exactly what the server returned; `discover`'s text also shows the tool and resource descriptions the server publishes, and lists the subjects under `rag://subjects`. Usage errors exit 2, operational errors exit 1 with one line; on a STDIO startup refusal the client prints the server's own reason.
 - **Dashboard page.** An MCP client of a separately running server; see §10.
-- **Not implemented.** Authentication of MCP callers, remote (non-loopback) binding, TLS, CORS for browser clients, the legacy SSE transport, resumability/session management, server-side timeouts, rate limiting, a REST API, prompts, further tools or resources.
+- **Not implemented.** Authentication of MCP callers, remote (non-loopback) binding, TLS, CORS for browser clients, the legacy SSE transport, resumability/session management, server-side timeouts, rate limiting, prompts, further tools or resources.
+
+---
+
+## 15. REST adapter
+
+`api_server.py` is a second transport adapter beside the MCP server: plain HTTP + JSON for any HTTP client, built on FastAPI and uvicorn. It owns routes, request schemas, the HTTP boundary and the error contract — nothing else.
+
+```
+HTTP clients: curl · scripts · the OpenAPI page /docs · …
+        │  http://127.0.0.1:<port>  (loopback only; default port 8001)
+        ▼
+api_server.py --role employee|manager [--host] [--port]
+        │            transport adapter: request schema, HTTP boundary, problem+json error mapping
+        │            ├── public_views.py    the public projections, shared with the MCP server
+        │            └── failures.py        classify_failure(), shared with the MCP server
+        ▼
+ask.ask()  ·  manage.collection_health()      application use cases (unchanged by REST)
+```
+
+- **Endpoints.** `/docs` and `/openapi.json` are the authoritative contract; there are exactly six paths.
+  - `POST /v1/ask` — `ask.ask()` → `public_views.project_ask_result()` → JSON. Body `AskRequest` (unknown fields rejected): `question` (strict string, stripped, 1–2000 characters, the shared `public_views.Question`), `config` (exact `ConfigName`, default `DEFAULT_CONFIG`), `judge` (strict boolean, default `false`), `updated_on_or_after` (`null` or exactly `YYYY-MM-DD`; a future date is valid and simply narrows retrieval). The response is `AskRagResult`, the same projection MCP returns. `not_found` and a failed security audit (answer, sources and judgement withheld) are normal 200 results.
+  - `GET /v1/health` — **readiness**: `manage.collection_health(manage.aoss_client())` → `public_views.project_health()`. 200 when `ready`, 503 with the same `HealthResult` body when not. The projection alone decides readiness.
+  - `GET /healthz` — **liveness**: the process is up. No backend call.
+  - `GET /v1/info` — `{name: "novaops-knowledge-base", version, api_version: "v1", role}`. `API_SERVER_VERSION` (0.1.0) is the REST server's own version, independent of the MCP server's.
+  - `GET /v1/capabilities` — the configurations (`public_views.configuration_capabilities()`, shared with MCP), the default, judging, security behaviour and request limits. The same for every role; no MCP concepts (`contract_version`, `subjects_resource`) — the `/v1` path versions the API.
+  - `GET /v1/subjects` — `{subjects: [...]}` from `subjects.SUBJECTS`.
+- **Role.** `--role` is required and validated at startup by `retrieval.access_filter()` (exit 2 otherwise). It is fixed for the process and is not part of any request: a body with `role` is rejected (422, located at `["body", "role"]`). One process per role.
+- **HTTP boundary.** No authentication, so: `--host` accepts only `127.0.0.1`, `localhost` or `::1` (exit 2 otherwise); a middleware rejects a `Host` header that does not name a loopback address (400, which defeats DNS rebinding) and any POST/PUT/PATCH whose `Content-Type` is not `application/json`, including a missing one (415, checked before routing). There is no CORS, so a browser cannot send a JSON body cross-site: the preflight fails. There is deliberately no `Origin` check — with JSON-only bodies and no CORS it would block nothing more, and non-browser clients can send any `Origin`.
+- **Errors.** One RFC 9457 `application/problem+json` shape everywhere: `type` (`urn:novaops:problem:<code>`), `title`, `status`, `detail`, plus `errors` (`location`, `message`, `type`) for validation. Fixed wording; never the submitted values or an exception's message (a validation location may name an unknown field). Validation 422; media type 415; unknown path 404; wrong method 405 (with `Allow`); foreign `Host` 400. Use-case failures go through `run_use_case()`, which catches `Exception` **and** `SystemExit` and applies `classify_failure()`: `service_unavailable` (including the `SystemExit` raised by endpoint resolution) 503, `service_timeout` 504, `unsupported_role` 500 (the role is validated at startup, so this is a server fault), anything else 500 `internal-error` with the traceback in the server log only. A failure ends one request, never the server. OpenAPI documents the errors as `Problem`, replacing FastAPI's default validation-error schema.
+- **Lifecycle.** No backend access at startup or for liveness and metadata. The OpenSearch client for `/v1/ask` is created lazily on first use (a small lock-protected getter, independent of the MCP one) and cached only after success. Health creates the control-plane client per call, like MCP. Routes are synchronous and run on the framework's worker threads; one process, no workers; no server-side timeout.
+- **Logging.** Category and exception type for handled failures; never questions, answers or exception text. The REST server does not call `configure_logging()`: its warnings reach stderr through Python's last-resort handler; uvicorn's access log shows method, path and status.
+- **Dependencies.** Optional `requirements-api.txt` (`fastapi`, `uvicorn`); not in `requirements.txt` or the dashboard deployment. Only `api_server.py` imports FastAPI, Starlette or uvicorn; nothing imports `api_server`; it imports neither MCP nor Streamlit/UI code, and reaches the core only through `ask`, `manage`, `public_views` and `subjects` (`tests/test_api_boundary.py`).
+- **Tests.** In-process (`tests/test_api_server.py`, `test_api_ask.py`, `test_api_health.py`, `test_api_metadata.py`, all AWS mocked); real processes on loopback with AWS calls refused locally (`tests/test_api_http.py`, always run); and opt-in live tests against the real backend in the same module (`NOVAOPS_LIVE_TESTS=1`), the only tests that call AWS.
+- **Not implemented.** Authentication, remote binding, TLS, CORS, rate limiting, server-side timeouts, request cancellation of model calls already under way.

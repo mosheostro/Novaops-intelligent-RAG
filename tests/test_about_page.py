@@ -47,8 +47,8 @@ class AboutPageTests(_AboutTestCase):
         headers = [h.value for h in at.main.header]
         for section in ("What the system demonstrates", "High-level architecture", "RAG pipeline",
                         "Security vs relevance", "Evaluation", "Live chat vs evaluation runs",
-                        "Why Streamlit?", "Current architecture and future extensions",
-                        "MCP integration", "Technology stack", "Architecture principles",
+                        "Why Streamlit?", "Current architecture and extension points",
+                        "MCP integration", "REST API", "Technology stack", "Architecture principles",
                         "About the author"):
             self.assertIn(section, headers)
         self.assertEqual(len(at.sidebar.radio), 1)  # the shared sidebar (Role) is still there
@@ -85,12 +85,50 @@ class DiagramContentTests(unittest.TestCase):
                 first = [line for line in body.splitlines() if not line.startswith("%%")][0]
                 self.assertTrue(first.startswith("flowchart"), name)
 
-    def test_extensions_diagram_shows_mcp_as_implemented_and_the_api_as_future(self):
+    def test_extensions_diagram_shows_every_client_as_implemented(self):
         body = diagrams.EXTENSIONS
         self.assertIn("Streamlit UI<br/>implemented", body)
         self.assertIn("MCP server / tools<br/>implemented · STDIO · Streamable HTTP", body)
-        self.assertIn("HTTP API<br/>future extension point", body)
+        self.assertIn("REST API<br/>implemented · loopback only", body)
+        self.assertIn("rest --> boundary", body)
+        self.assertNotIn("-.->", body)  # nothing left as a dashed, not-yet-built path
         self.assertNotIn("planned", body)
+        self.assertNotIn("future extension point", body)
+
+    def test_the_rest_api_is_named_consistently_and_described_as_implemented(self):
+        for text in [*diagrams.ALL.values(), PAGE_SOURCE]:
+            self.assertNotIn("HTTP API", text)  # "REST API": no confusion with MCP's HTTP transport
+        self.assertIn("REST API — implemented (loopback only)", PAGE_SOURCE)
+        self.assertNotIn("future extension point", PAGE_SOURCE)
+        self.assertNotIn("an HTTP API would too", PAGE_SOURCE)
+        self.assertIn('rest["REST API<br/>loopback · role fixed at startup"]', diagrams.ARCHITECTURE)
+        self.assertIn("rest --> boundary", diagrams.ARCHITECTURE)
+        self.assertNotIn("not implemented", diagrams.ARCHITECTURE)
+        self.assertNotIn("class future future", diagrams.ARCHITECTURE)
+        self.assertNotIn("future clients, not implemented", PAGE_SOURCE)  # no dashed future client remains
+
+    def test_rest_diagram_shows_the_endpoints_and_the_path_through_the_boundary(self):
+        body = diagrams.REST
+        for path in ("POST /v1/ask", "GET /v1/health", "/v1/info", "/v1/capabilities", "/v1/subjects",
+                     "GET /healthz"):
+            self.assertIn(path, body)
+        self.assertIn("role fixed at startup", body)
+        self.assertIn("loopback only", body)
+        self.assertIn("Shared public views", body)
+        self.assertIn("rest --> boundary", body)
+        self.assertIn("boundary --> ragcore", body)
+        self.assertNotIn("rest --> ragcore", body)  # REST reaches the core only through the boundary
+        self.assertNotIn("dashboard", body.lower())  # the dashboard is not a REST client
+        self.assertNotRegex(body, r"\d+\.\d+\.\d+")  # no hard-coded server version to drift
+
+    def test_the_rest_section_shows_the_rest_diagram(self):
+        start = PAGE_SOURCE.index('st.header("REST API"')
+        end = PAGE_SOURCE.index("st.header(", start + 1)
+        section = PAGE_SOURCE[start:end]
+        self.assertIn("st.mermaid_chart(diagrams.REST)", section)
+        for fact in ("/healthz", "/v1/health", "fixed at startup", "loopback", "authentication",
+                     "problem+json", "/docs"):
+            self.assertIn(fact, section)
 
     def test_mcp_is_described_as_implemented_not_planned(self):
         self.assertIn("MCP server<br/>STDIO · Streamable HTTP", diagrams.ARCHITECTURE)

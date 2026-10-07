@@ -244,6 +244,8 @@ Pydantic models are used here as **in-process domain objects**: `report()` and a
 
 JSON only appears where something actually needs to leave the process: a future API response, an MCP tool result, a saved evaluation-run artifact. At that boundary, `EvaluationResult.model_dump()` / `.model_dump_json()` produce the JSON representation directly from the domain object — there is no intermediate hand-built dict, and no path where a dict is built first and then wrapped in Pydantic after the fact (the anti-pattern explicitly named in the task: `evaluation → dict → JSON → Pydantic`). The direction is always `evaluation → Pydantic → (Python callers) or (JSON at a boundary)`.
 
+> **Correction (2026-10-07):** the MCP server and the REST API do not serialize the domain models. They return explicit public projections (`public_views.py`), because `AskResult` carries chunk text, vector scores and the sources a failed security audit flagged. Saved run artifacts still use `EvaluationResult.model_dump_json()` as described here. Current state: `docs/architecture.md` §7, §14, §15.
+
 ---
 
 ## 9. Non-goals
@@ -328,6 +330,9 @@ This section is the checklist the implementation task must follow. Every point b
 - **Static/dynamic retrieval sharing:** configs 4 and 5 share **one** `RetrievalResult` instance by reference (safe because it's frozen — see next point) and each get their **own** `SelectionResult`. Build it once; do not rebuild or re-audit the pool for the second config.
 - **Immutability:** every model in the hierarchy — including `Candidate` — is frozen. `annotate_rerank_scores`'s successor becomes a pure function returning a new `list[Candidate]` (`model_copy(update=...)`) instead of mutating in place.
 - **Serialization boundary:** Pydantic objects are used for their structure and validation *inside* Python throughout `eval.py`, `report()`, and any future in-process consumer. JSON (`model_dump()` / `model_dump_json()`) appears only at an external boundary — a future API response, an MCP tool result, a saved artifact. There is no dict-building stage before the models exist, and no dict-building stage after, before something external needs JSON.
+
+> **Correction (2026-10-07):** the MCP server and the REST API do not serialize the domain models. They return explicit public projections (`public_views.py`), because `AskResult` carries chunk text, vector scores and the sources a failed security audit flagged. Saved run artifacts still use `EvaluationResult.model_dump_json()` as described here. Current state: `docs/architecture.md` §7, §14, §15.
+
 - **Which functions construct models vs. stay plain helpers:** see the table in §10. In one sentence — the function that already assembles a concept becomes that concept's constructor (`hits_to_candidates` → `Candidate`, `_rank_selected` → `SelectedChunk`/`SelectionResult`, `audience_violation` → `SecurityAudit`, `score_answer` → `ContentEvaluation`/`RefusalEvaluation`, `_retrieval_info` → `RetrievalResult`, `run_config` → `ConfigurationResult`, `evaluate_question` → `QuestionResult`, `evaluate` → `EvaluationResult`); `select_context` and `report()` never construct a model and keep their exact current shape.
 - **No functional-architecture regressions:** no `EvaluationEngine`, `Repository`, `Service`, `Mapper`, or `Factory` class is introduced anywhere in this list. Every constructor above is a plain function; `eval.py` stays the same kind of module it is today, just returning richer types.
 

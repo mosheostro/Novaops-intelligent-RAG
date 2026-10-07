@@ -37,7 +37,8 @@ st.markdown(
     "UI-independent RAG core. Evaluation uses the same pipeline and adds independent judges."
 )
 st.mermaid_chart(diagrams.ARCHITECTURE)
-st.caption("Solid lines: implemented. Dashed: future clients, not implemented.")
+st.caption("Dashed: the dashboard's MCP page, which reaches the MCP server as an MCP client. The dashboard "
+           "itself calls the application boundary in-process; it is not a REST client.")
 
 # --- RAG pipeline -----------------------------------------------------------------------------
 st.header("RAG pipeline", divider="gray")
@@ -127,7 +128,7 @@ with reasons:
         "- No separate frontend stack, API contract or build pipeline to maintain.\n"
         "- The UI stays a thin presentation and evaluation layer.\n"
         "- The RAG core has no Streamlit dependency — the CLI already uses it without one.\n"
-        "- The MCP server already uses the same boundary; an HTTP API would too."
+        "- The MCP server and the REST API use the same boundary."
     )
 fits, later = st.columns(2)
 with fits.container(border=True, height="stretch"):
@@ -151,14 +152,15 @@ st.markdown(
     "It is not a fundamental dependency of the RAG architecture."
 )
 
-# --- Current architecture and future extensions -----------------------------------------------
-st.header("Current architecture and future extensions", divider="gray")
+# --- Current architecture and extension points ------------------------------------------------
+st.header("Current architecture and extension points", divider="gray")
 st.mermaid_chart(diagrams.EXTENSIONS)
 st.markdown(
     ":green-badge[Streamlit UI — implemented] :green-badge[MCP — implemented (STDIO · Streamable HTTP)] "
-    ":gray-badge[HTTP API — future extension point]"
+    ":green-badge[REST API — implemented (loopback only)]"
 )
-st.caption("Every client calls the same use cases and returns the same domain models; none bypass the core.")
+st.caption("Every client calls the same use cases; none bypass the core. MCP and the REST API return the same "
+           "public views of the results, never the internal domain objects.")
 
 # --- MCP integration --------------------------------------------------------------------------
 st.header("MCP integration", divider="gray")
@@ -175,6 +177,24 @@ st.caption(
     "The server runs with a role fixed at startup (employee or manager) — a server setting, not "
     "authentication of the MCP caller. Caller authentication is not implemented, so the HTTP transport "
     "accepts local (loopback) connections only."
+)
+
+# --- REST API ---------------------------------------------------------------------------------
+st.header("REST API", divider="gray")
+st.mermaid_chart(diagrams.REST)
+st.markdown(
+    "A REST API offers the same question answering to any HTTP client, as a separate local process "
+    "(`python api_server.py --role employee`). `POST /v1/ask` answers a question; `GET /v1/health` checks "
+    "readiness of the knowledge base (a backend check); `GET /healthz` only confirms the process is up "
+    "(no backend call); `/v1/info`, `/v1/capabilities` and `/v1/subjects` describe the server. Like MCP, it "
+    "calls the existing application boundary and returns the shared public views: answers and source "
+    "metadata, never document text or infrastructure details. Its interactive OpenAPI page, `/docs`, is the "
+    "authoritative contract."
+)
+st.caption(
+    "The role is fixed at startup and a request cannot override it. There is no authentication in this "
+    "version, so the server accepts loopback connections only. Errors are RFC 9457 problem+json responses. "
+    "The dashboard does not use the REST API; it calls the application in-process."
 )
 
 # --- Technology stack -------------------------------------------------------------------------

@@ -32,7 +32,12 @@ Current architecture: `docs/architecture.md` (wins over the older design records
   `collection_health(aoss) -> CollectionHealth` is the structured, read-only health use case; `status()`
   prints from it. Its logs carry states and exception types only (no names, endpoint or error text).
 - `failures.py` — transport-independent `classify_failure()`: unsupported_role · service_timeout ·
-  service_unavailable (incl. resolve_endpoint's SystemExit) · internal. Imported only by the MCP server.
+  service_unavailable (incl. resolve_endpoint's SystemExit) · internal. Imported by the MCP server and the
+  REST API only.
+- `public_views.py` — the public, security-safe projections both adapters return: `AskRagResult` +
+  `project_ask_result` (no chunk text/vector scores/question; violation → answer, sources, judgement withheld),
+  `HealthResult` + `project_health` (no endpoint/error text), `MAX_QUESTION_CHARS`/`Question`,
+  `ConfigurationCapability` + `configuration_capabilities()`. Imports no transport package.
 - `mcp_server.py` — MCP adapter, `novaops-knowledge-base` version `SERVER_VERSION` = 0.2.0
   (`--role employee|manager`, required, validated by `access_filter`; `--transport stdio|streamable-http`,
   default stdio; HTTP: `--host` loopback only — 127.0.0.1/localhost/::1 — `--port` default 8000, fixed path
@@ -46,7 +51,14 @@ Current architecture: `docs/architecture.md` (wins over the older design records
   transport failures → `ServerUnavailableError.kind` (unreachable/timeout/not_found/not_mcp/dropped);
   `ToolCallError` = the server's safe message; programming errors are not disguised. Validates nothing of the
   server's domain.
-- `models.DEFAULT_CONFIG` = `filter + rerank dynamic` — shared by the Chat page and `ask_rag`.
+- `api_server.py` — REST adapter (FastAPI + uvicorn), version `API_SERVER_VERSION` = 0.1.0, API `v1`.
+  `--role employee|manager` (required, validated by `access_filter`), `--host` loopback only, `--port` default
+  8001; `build_app(role)`. `POST /v1/ask` (`ask.ask` → `project_ask_result`; strict body, unknown fields incl.
+  `role` → 422), `GET /v1/health` (readiness, 200/503 HealthResult; failures problem+json), `GET /healthz`
+  (liveness, no backend), `GET /v1/info`, `/v1/capabilities`, `/v1/subjects`. Host allow-list (400), JSON-only
+  bodies (415), no CORS, no Origin check. RFC 9457 problem+json errors via `run_use_case` (catches Exception
+  and SystemExit → `classify_failure`: 503 / 504 / 500). Lazy OpenSearch client.
+- `models.DEFAULT_CONFIG` = `filter + rerank dynamic` — shared by the Chat page, `ask_rag` and `/v1/ask`.
 - `ui/access.py` — UI-only deployment boundary: Streamlit secrets → os.environ bridge (never overwrites;
   shell > .env > secrets) and the mandatory `APP_PASSWORD` gate (fail-closed, hmac.compare_digest,
   session_state). CLI/eval/tests/RAG never need APP_PASSWORD.
@@ -55,7 +67,8 @@ Current architecture: `docs/architecture.md` (wins over the older design records
   saved runs), Run detail (summary, questions × configs matrix, per-config drill-down), Infrastructure & Setup,
   MCP server (`app_pages/mcp_page.py`: an MCP client of a separately running server — Connect / Refresh,
   discovery, health, ask_rag; loopback URLs only; 120 s read timeout; degrades without the SDK), About /
-  Architecture (read-only visual summary of docs/project-overview.md; static, no backend calls).
+  Architecture (read-only visual summary of docs/project-overview.md; static, no backend calls; includes the
+  MCP and REST API diagrams). The dashboard is never a REST client.
 
 ## Decisions
 - Bedrock boundary: no other module creates `boto3.client("bedrock-runtime")`.
@@ -81,7 +94,18 @@ Current architecture: `docs/architecture.md` (wins over the older design records
   the MCP server (separate processes). Server version is maintained by hand in `SERVER_VERSION`.
 - MCP role = server role fixed at startup, not authentication; no role tool argument, no fallback.
 - MCP output never contains infrastructure identifiers (server name is `novaops-knowledge-base`), chunk text,
-  vector scores or violating file names. `MAX_QUESTION_CHARS = 2000` is an MCP boundary rule, not an `ask()` rule.
+  vector scores or violating file names. `MAX_QUESTION_CHARS = 2000` is an adapter boundary rule (shared by MCP
+  and REST in `public_views.py`), not an `ask()` rule.
+- Adapters never serialize `AskResult`/`CollectionHealth`; MCP and REST return the shared `public_views`
+  projections. The MCP published contract is pinned by `tests/test_mcp_contract.py` (recorded snapshot).
+- REST: an optional sibling adapter (`requirements-api.txt`: fastapi, uvicorn; never in `requirements.txt` or
+  the dashboard deployment). Only `api_server.py` imports FastAPI/Starlette/uvicorn; nothing imports
+  `api_server`; it imports no MCP or UI code (`tests/test_api_boundary.py`). Role fixed at startup, never in a
+  request. Loopback only, no authentication. `/docs` / `/openapi.json` are the authoritative contract; the
+  README's REST endpoint table is checked against it (`tests/test_api_docs.py`).
+- REST status mapping: validation 422, media type 415, foreign Host 400, 404/405, service unavailable 503
+  (incl. SystemExit), timeout 504, unsupported role 500 (server fault), anything else 500. `not_found` and a
+  security violation are 200 results; health not-ready is 503 with the HealthResult body.
 - No MCP server-side timeout (revisit after latency measurements); the dashboard page uses a 120 s client
   read timeout, the CLI the SDK defaults.
 
@@ -91,10 +115,15 @@ Current architecture: `docs/architecture.md` (wins over the older design records
   health_check, ask_rag).
 - MCP Stage 2 implemented: Streamable HTTP transport, command-based client CLI, dashboard MCP page, server
   version 0.2.0.
-- Tests: 595 passing with the MCP SDK installed, `.venv\Scripts\python.exe -m unittest discover -s tests`
-  (everything mocked, no AWS — the MCP STDIO/HTTP tests start local server processes with placeholder config on
-  loopback; system Python lacks opensearch-py). Without the SDK the MCP test modules are skipped. Logging tests
-  assert the WARNING/WARNING defaults.
+- REST API implemented (Stages 1–7): shared `public_views`, `api_server.py` with six endpoints, docs and the
+  About page. Validated live: health, ask (default/explicit config, cutoffs, not_found), employee vs manager
+  access boundary, role-override rejection, real SystemExit → 503.
+- Tests: `.venv\Scripts\python.exe -m unittest discover -s tests` with the MCP SDK and the REST dependencies
+  installed (system Python lacks opensearch-py). No AWS by default: unit tests mock it; the MCP and REST
+  real-process tests run servers on loopback with placeholder config (REST sends AWS calls to a closed loopback
+  port via `AWS_ENDPOINT_URL`). Live REST tests run only with `NOVAOPS_LIVE_TESTS=1`
+  (`tests.test_api_http.LiveBackendTests`). Without an optional dependency its test modules are skipped.
+  Logging tests assert the WARNING/WARNING defaults.
 
 ## Known issues / open items
 - ACCESS_REVIEW (expect_refusal=true) → refusal_ok=False in all configs: the model answers from handbook
@@ -117,3 +146,9 @@ Current architecture: `docs/architecture.md` (wins over the older design records
   logs "Terminating session: None" at INFO on stderr for every stateless request (no sensitive data). A server
   bound to `127.0.0.1` is not reachable at `http://[::1]:…/mcp` (IPv4-only bind) — use the host it was started
   with.
+- REST: no authentication, rate limiting or server-side timeout; a disconnected client does not cancel model
+  calls under way. Its warnings reach stderr via Python's last-resort handler (no `configure_logging()`).
+  A security violation and a 504 cannot be produced against the live backend; both are covered by mocked tests.
+  The live manager-playbook assertion depends on the current index contents.
+- Ports: REST defaults to 8001, which the README's MCP manager example also uses — pick different ports when
+  running both.

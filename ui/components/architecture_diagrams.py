@@ -15,7 +15,6 @@ _STYLES = """
     classDef app fill:#FFFFFF,stroke:#64748B,color:#0F172A
     classDef core fill:#E0E7FF,stroke:#4338CA,color:#1E1B4B
     classDef ext fill:#FFFFFF,stroke:#94A3B8,color:#0F172A
-    classDef future fill:#FFFFFF,stroke:#94A3B8,stroke-dasharray:5 5,color:#64748B
     classDef security fill:#FFF7ED,stroke:#C2410C,color:#431407
     classDef quality fill:#F0FDF4,stroke:#15803D,color:#052E16
     classDef muted fill:#FFFFFF,stroke:#CBD5E1,color:#475569
@@ -34,7 +33,7 @@ ARCHITECTURE = styled_diagram("""flowchart TB
     ui["Streamlit UI<br/>Chat · Evaluation runs · MCP page · About"]
     cli["Evaluation CLI"]
     mcpsrv["MCP server<br/>STDIO · Streamable HTTP"]
-    future["HTTP API<br/>future client"]
+    rest["REST API<br/>loopback · role fixed at startup"]
     boundary["Application boundary<br/>ask one question · run an experiment · saved runs"]
     ragcore["RAG core<br/>access · planning · filtering · retrieval<br/>reranking · selection · answer"]
     evaluation["Evaluation<br/>LLM judges · saved run artifacts"]
@@ -45,19 +44,18 @@ ARCHITECTURE = styled_diagram("""flowchart TB
     cli --> boundary
     mcpsrv --> boundary
     ui -.->|MCP page: MCP client over HTTP| mcpsrv
-    future -.->|not implemented| boundary
+    rest --> boundary
     boundary --> ragcore
     boundary -->|evaluation path| evaluation
     evaluation -->|same pipeline| ragcore
     ragcore --> search
     ragcore --> bedrock
     evaluation --> bedrock
-    class ui,cli,mcpsrv client
+    class ui,cli,mcpsrv,rest client
     class boundary app
     class ragcore core
     class evaluation quality
     class search,bedrock ext
-    class future future
     class user muted
 """)
 
@@ -151,15 +149,14 @@ STREAMLIT = styled_diagram("""flowchart TB
 
 EXTENSIONS = styled_diagram("""flowchart TB
     streamlit["Streamlit UI<br/>implemented"]
-    api["HTTP API<br/>future extension point"]
+    rest["REST API<br/>implemented · loopback only"]
     mcp["MCP server / tools<br/>implemented · STDIO · Streamable HTTP"]
     streamlit --> boundary["Application boundary"]
-    api -.-> boundary
+    rest --> boundary
     mcp --> boundary
     boundary --> ragcore["RAG core + shared domain models"]
     ragcore --> services[("OpenSearch Serverless + Amazon Bedrock")]
-    class streamlit,mcp client
-    class api future
+    class streamlit,rest,mcp client
     class boundary app
     class ragcore core
     class services ext
@@ -184,6 +181,28 @@ MCP = styled_diagram("""flowchart LR
     class ragcore core
 """)
 
+# REST: any HTTP client, one loopback server, the same application boundary. No version label:
+# the dashboard cannot read the REST server's version, and a copied number would drift.
+REST = styled_diagram("""flowchart LR
+    subgraph clients["HTTP clients"]
+        curl["curl · scripts · any HTTP client"]
+        docs["OpenAPI page /docs"]
+    end
+    rest["REST API · loopback only<br/>POST /v1/ask · GET /v1/health<br/>GET /v1/info · /v1/capabilities · /v1/subjects<br/>GET /healthz liveness<br/>role fixed at startup"]
+    views["Shared public views<br/>the same safe results MCP returns"]
+    boundary["Application boundary"]
+    ragcore["RAG core<br/>access control enforced here"]
+    curl -->|"JSON over HTTP"| rest
+    docs --> rest
+    rest --> boundary
+    boundary --> ragcore
+    rest -.->|"responses"| views
+    class curl,docs client
+    class rest,boundary app
+    class views quality
+    class ragcore core
+""")
+
 ALL = {
     "architecture": ARCHITECTURE,
     "pipeline": PIPELINE,
@@ -192,4 +211,5 @@ ALL = {
     "streamlit": STREAMLIT,
     "extensions": EXTENSIONS,
     "mcp": MCP,
+    "rest": REST,
 }

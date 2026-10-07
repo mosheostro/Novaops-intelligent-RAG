@@ -2,7 +2,7 @@
 
 A filtered and reranked retrieval-augmented generation (RAG) pipeline over the NovaOps knowledge base, built on Amazon Bedrock and Amazon OpenSearch Serverless. It combines semantic vector retrieval, a hard audience/access boundary, soft subject-based metadata filtering, listwise reranking with a language model, adaptive context selection and grounded answer generation. An evaluation harness measures each mechanism on its own and in combination, so the effect of every stage is visible rather than assumed.
 
-> **Status: implemented.** The retrieval pipeline, the five-configuration evaluation harness (with saved run artifacts) and a Streamlit dashboard (chat + evaluation laboratory) run against the live collection. An MCP server (STDIO and Streamable HTTP; three tools and one resource), a command-line MCP client and an MCP page in the dashboard expose the same question-answering use case over the Model Context Protocol — see [MCP server](#mcp-server). The current architecture is documented in [`docs/architecture.md`](docs/architecture.md); a REST/HTTP API is a future consumer, not implemented.
+> **Status: implemented.** The retrieval pipeline, the five-configuration evaluation harness (with saved run artifacts) and a Streamlit dashboard (chat + evaluation laboratory) run against the live collection. An MCP server (STDIO and Streamable HTTP; three tools and one resource), a command-line MCP client and an MCP page in the dashboard expose the same question-answering use case over the Model Context Protocol — see [MCP server](#mcp-server). A loopback-only REST API offers it to any HTTP client — see [REST API](#rest-api). The current architecture is documented in [`docs/architecture.md`](docs/architecture.md).
 
 ## Architecture
 
@@ -95,14 +95,17 @@ logging_setup.py     Centralized logging configuration (called only from eval.py
 manage.py            Collection status / teardown (control plane; typed confirmation); collection_health()
 mcp_server.py        MCP server (STDIO or Streamable HTTP): ask_rag, health_check, get_rag_capabilities, rag://subjects
 mcp_client.py        MCP client: CLI (discover / health / ask) and the synchronous functions the dashboard page uses
-failures.py          Transport-independent failure categories used by the MCP server
+api_server.py        REST API (FastAPI, loopback only): /v1/ask, /v1/health, /v1/info, /v1/capabilities, /v1/subjects, /healthz
+public_views.py      The public, security-safe views of results that MCP and the REST API return
+failures.py          Transport-independent failure categories used by the MCP server and the REST API
 ui/                  Streamlit dashboard (app.py, app_pages/, components/, access.py); app_pages/mcp_page.py is the MCP client page
 .streamlit/          Dashboard theme
-tests/               Unit tests — no network, all AWS calls mocked
+tests/               Unit tests (AWS mocked); real-process tests on loopback; opt-in live REST tests
 data/                The NovaOps corpus and the evaluation questions
 docs/                Architecture and design decisions
 requirements.txt     Python dependencies
 requirements-mcp.txt Optional MCP dependency (the SDK); kept out of the dashboard deployment
+requirements-api.txt Optional REST API dependencies (FastAPI, uvicorn); kept out of the dashboard deployment
 .env.example         Configuration template (placeholders only)
 setup.sh, setup.ps1  Bootstrap scripts (virtual environment, dependencies, .env check)
 CLAUDE.md            Working conventions for AI-assisted development
@@ -161,7 +164,13 @@ source .venv/bin/activate     # Git Bash: source .venv/Scripts/activate   PowerS
 python -m unittest
 ```
 
-The MCP tests need the optional dependency (`pip install -r requirements-mcp.txt`); without it they are skipped with that instruction, and the MCP dependency-boundary tests still run.
+The MCP tests need the optional dependency (`pip install -r requirements-mcp.txt`); without it they are skipped with that instruction, and the MCP dependency-boundary tests still run. The REST API tests likewise need `requirements-api.txt`. Some MCP and REST tests start real server processes on loopback ports with placeholder settings; they make no AWS call.
+
+The live REST tests are the only tests that call AWS. They start real REST servers on your `.env` and ask a few questions, so they cost a handful of model calls. They are skipped unless you opt in:
+
+```powershell
+$env:NOVAOPS_LIVE_TESTS = "1"; .venv\Scripts\python.exe -m unittest tests.test_api_http -v
+```
 
 ## MCP server
 
@@ -217,7 +226,43 @@ That is the whole surface: no `get_subjects` tool, no prompts, no resource templ
 
 **Security and privacy.** The access filter is applied from the server's role on every request. If the security audit finds content outside the role's permitted audience, the answer, sources and judgement are withheld; the response reports only that a violation happened, how many sources it flagged and a fixed explanation — never which documents. Protocol output (including the server name) carries no collection name, endpoint, index name, region or account identifiers, and neither do the health and request logs. Service failures come back as fixed messages (`service_unavailable`, `service_timeout`, `unsupported_role`); unexpected errors as a generic tool error. The server's stderr is operator output: on a security violation the core's audit log names the flagged files there, and an unexpected error is logged with its traceback.
 
-Limitations: no authentication of MCP callers, deliberately (the role is a startup setting), which is why the HTTP transport is loopback-only; no REST API; no server-side request timeout — a first call after the knowledge base has been idle can take noticeably longer, so give MCP clients a generous request timeout, and use `health_check` to warm it up.
+Limitations: no authentication of MCP callers, deliberately (the role is a startup setting), which is why the HTTP transport is loopback-only; no server-side request timeout — a first call after the knowledge base has been idle can take noticeably longer, so give MCP clients a generous request timeout, and use `health_check` to warm it up.
+
+## REST API
+
+`api_server.py` offers the same question answering to any HTTP client, as a separate local process. It is a thin adapter, a sibling of the MCP server: it calls the existing `ask.ask()` and `manage.collection_health()` use cases and returns the same public views of the results as MCP (`public_views.py`). Retrieval, access control, reranking, the security audit and judging stay in the core. The dashboard does not use it; the dashboard calls the application in-process.
+
+```bash
+pip install -r requirements-api.txt                       # optional dependencies: FastAPI and uvicorn
+python api_server.py --role employee                      # http://127.0.0.1:8001
+python api_server.py --role manager --port 8002           # a second server for the other role
+```
+
+The interactive OpenAPI page at `http://127.0.0.1:8001/docs` (and `/openapi.json`) is the authoritative contract. Stop a server with Ctrl+C. The MCP manager example above also uses port 8001: pick different ports if you run both.
+
+| Endpoint | What it does |
+|---|---|
+| `POST /v1/ask` | Answers one question as the server's role. JSON body: `question` (required, 1–2000 characters), `config` (one of the five configurations, default `filter + rerank dynamic`), `judge` (`true`/`false`, default `false`), `updated_on_or_after` (optional, exactly `YYYY-MM-DD`). Unknown fields are rejected. |
+| `GET /v1/health` | **Readiness** — a backend check of the knowledge base: `ready`, `collection_state`, `index_present`, `chunk_count`, `data_plane_reachable`. 200 when ready, 503 with the same body when not. |
+| `GET /healthz` | **Liveness** — the process is up. No backend call. |
+| `GET /v1/info` | Name, server version, API version and the server's role. |
+| `GET /v1/capabilities` | The five configurations and what each does, the default, judging, security behaviour and request limits. |
+| `GET /v1/subjects` | The subject vocabulary. |
+
+```bash
+curl -s http://127.0.0.1:8001/v1/ask -H "Content-Type: application/json" \
+     -d '{"question": "Does the company match my 401k contributions?"}'
+```
+
+**Role.** `--role` is required: `employee` or `manager`, validated at startup by the same access filter the pipeline uses. It is fixed for the life of the process and is not part of the request: a body that contains `role` is rejected (422). Run one server per role. It is a server setting, not authentication.
+
+**Responses.** `POST /v1/ask` returns the same projection as MCP's `ask_rag`: the answer, configuration, role, status, planned subjects, cutoff, the number of candidates considered, the sources as metadata only, a `security_audit` and, when requested, the judgement — never chunk text, vector scores or the question. `not_found` is a normal 200 result. So is a failed security audit: the answer, sources and judgement are withheld, and only the count of flagged sources is reported.
+
+**Errors.** Every error is an RFC 9457 `application/problem+json` body (`type`, `title`, `status`, `detail`, plus `errors` for validation) with fixed wording — never the request's values or an exception's message. Invalid input is 422; a body that is not declared `application/json` is 415; an unknown path is 404 and a wrong method 405; an unavailable knowledge base or model service is 503 and a timeout 504; anything unexpected is 500.
+
+**Security.** There is no authentication in this version, so the server binds to loopback only (`--host` accepts `127.0.0.1`, `localhost` or `::1`) and protects itself against browsers: a foreign `Host` header is rejected (400), request bodies must be declared JSON, and there is no CORS — so a web page cannot send a question cross-site. Responses and logs carry no collection name, endpoint, index name, region or account identifiers, and the server never logs questions or answers.
+
+Limitations: no authentication, no rate limiting and no server-side timeout; a client that disconnects does not cancel model calls already under way, and `judge: true` adds 3–4 model calls. A first question after the knowledge base has been idle can take noticeably longer — call `/v1/health` to warm it up.
 
 ## Deployment (Streamlit Community Cloud)
 
@@ -225,6 +270,7 @@ Limitations: no authentication of MCP callers, deliberately (the role is a start
 - `ui/app.py` bridges those secrets into the environment before `config.py` validates it, without overwriting values that are already set (precedence: shell environment > local `.env` > Streamlit secrets). `config.py` itself stays independent of Streamlit.
 - `APP_PASSWORD` protects the whole dashboard. It is a basic shared-password gate for a demo — not user authentication or authorization. The sidebar Employee/Manager role remains a demo retrieval-audience selector.
 - The deployment installs `requirements.txt` only, without the MCP SDK; there the MCP server page explains how to install it locally instead of failing. The rest of the dashboard is unaffected.
+- The REST API is not part of the deployment: it is a separate, loopback-only local process.
 - Never commit real credentials or passwords: `.env` and `.streamlit/secrets.toml` are git-ignored; `.env.example` holds placeholders only.
 
 ## Security

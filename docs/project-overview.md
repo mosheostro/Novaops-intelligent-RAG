@@ -46,6 +46,7 @@ flowchart TB
         ui["Streamlit UI<br/>Chat · Evaluation runs · Run detail · MCP page"]
         cli["Evaluation CLI"]
         mcpsrv["MCP server<br/>STDIO · Streamable HTTP"]
+        rest["REST API<br/>loopback · role fixed at startup"]
     end
 
     subgraph application["Application boundary"]
@@ -65,8 +66,6 @@ flowchart TB
         br["Amazon Bedrock<br/>embeddings + chat model"]
     end
 
-    future["Future clients<br/>HTTP API"]
-
     user --> ui
     ui --> askuc
     ui --> evaluc
@@ -74,7 +73,7 @@ flowchart TB
     cli --> evaluc
     mcpsrv --> askuc
     ui -. "MCP page: MCP client over HTTP" .-> mcpsrv
-    future -. "not implemented" .-> application
+    rest --> askuc
     askuc --> pipeline
     evaluc --> pipeline
     evaluc --> judges
@@ -87,7 +86,7 @@ flowchart TB
     judges --> br
 ```
 
-**Presentation.** The Streamlit UI is the interactive front end; a command-line entry point runs evaluations and prints a report. Both are thin: they collect inputs and render results, and they contain no retrieval or model logic. The UI never talks to OpenSearch or Bedrock directly.
+**Presentation.** The Streamlit UI is the interactive front end; a command-line entry point runs evaluations and prints a report; the MCP server and the REST API offer question answering to other programs. All are thin: they collect inputs and render results, and they contain no retrieval or model logic. The UI never talks to OpenSearch or Bedrock directly.
 
 **Application boundary.** A small set of use cases sits between every client and the core: *ask one question with one configuration*, *run an experiment across selected questions and configurations*, and *store, list, load and delete saved runs*. Long evaluation runs are launched as a separate process so they cannot block or crash the UI.
 
@@ -246,7 +245,7 @@ The RAG core does not depend on Streamlit, and Streamlit holds no pipeline logic
 
 Streamlit is an **intentional choice for the current presentation and evaluation layer**. It is **not** a fundamental dependency of the RAG architecture.
 
-A React/Next.js front end would become a reasonable choice if the project turned into a multi-user product. Signals would include real user authentication and authorization, a custom interaction design, public-facing performance requirements, or several clients sharing one backend. At that point an HTTP API at the application boundary would come first, and a web front end would be one of its consumers. Neither is needed for the project's current goals.
+A React/Next.js front end would become a reasonable choice if the project turned into a multi-user product. Signals would include real user authentication and authorization, a custom interaction design, public-facing performance requirements, or several clients sharing one backend. At that point the REST API at the application boundary would gain real authentication and remote access, and a web front end would be one of its consumers. Neither is needed for the project's current goals.
 
 ---
 
@@ -260,20 +259,21 @@ A React/Next.js front end would become a reasonable choice if the project turned
 | Embeddings | Amazon Titan Text Embeddings V2 (1024-dimensional) on Bedrock |
 | Retrieval and index | Amazon OpenSearch Serverless (vector search collection, k-NN with metadata pre-filters) via `opensearch-py` with SigV4 signing |
 | Evaluation | LLM-as-judge scoring (faithfulness, context relevance, completeness, refusal); runs stored as JSON artifacts |
+| Interfaces | MCP Python SDK (STDIO, Streamable HTTP); REST API with FastAPI and uvicorn — both optional, loopback only |
 | Configuration | Environment variables validated at startup (`python-dotenv`; Streamlit secrets bridged for hosted use) |
-| Testing | Python `unittest` with every AWS call mocked; Streamlit `AppTest` for headless UI tests |
+| Testing | Python `unittest` with every AWS call mocked; Streamlit `AppTest` for headless UI tests; real server processes on loopback; opt-in live tests of the REST API |
 | Cloud | AWS (Bedrock, OpenSearch Serverless) through `boto3` |
 
 ---
 
-## Current architecture vs future extension points
+## Current architecture and extension points
 
 ```mermaid
 flowchart TB
     subgraph clients["Clients"]
         st["Streamlit UI<br/>IMPLEMENTED"]
         cli["Evaluation CLI<br/>IMPLEMENTED"]
-        api["HTTP API<br/>FUTURE extension point"]
+        api["REST API<br/>IMPLEMENTED (loopback only)"]
         mcp["MCP server / tools<br/>IMPLEMENTED (STDIO · Streamable HTTP)"]
     end
 
@@ -283,18 +283,15 @@ flowchart TB
 
     st --> boundary
     cli --> boundary
-    api -.-> boundary
+    api --> boundary
     mcp --> boundary
     boundary --> core
     core --> ext
-
-    classDef future stroke-dasharray: 5 5
-    class api future
 ```
 
-Solid lines are implemented; dashed ones are not. Any new client is meant to call the same application use cases and serialize the same domain models, rather than reaching into retrieval or model calls itself.
+Every client calls the same application use cases rather than reaching into retrieval or model calls itself. Clients outside the process — MCP and the REST API — return shared public views of the results, never the internal domain models, which carry document text and scores.
 
-**Architectural interpretation:** the application layer is an in-process Python boundary, not a network service. The MCP server wraps it today; a future API would wrap it the same way. One known refinement is already documented: the chat use case currently reuses pipeline helpers that live in the evaluation module. Moving those shared steps into their own module is the planned follow-up once a second client such as an API requires it. It does not change behavior.
+**Architectural interpretation:** the application layer is an in-process Python boundary, not a network service. The MCP server and the REST API each wrap it as a separate process; the Streamlit UI calls it in-process and is not a REST client. One known refinement is already documented: the chat use case currently reuses pipeline helpers that live in the evaluation module. Moving those shared steps into their own module is a deferred follow-up; neither MCP nor the REST API required it. It would not change behavior.
 
 ## MCP integration
 
@@ -321,7 +318,36 @@ flowchart LR
 - **Public output:** a deliberate projection of the domain result — the answer and source metadata (1-based ranks), never chunk text, vector scores or infrastructure identifiers. If the security audit flags a response, the answer, sources and judgement are withheld and only the fact and the number of flagged sources are reported.
 - **Clients:** `mcp_client.py` is a command-line client with `discover`, `health` and `ask` commands, over HTTP (`--url`) or STDIO (`--role`). The dashboard's **MCP server** page is an MCP client too: it connects to a separately running server and shows discovery, health and answers obtained through the protocol. It never starts or manages the server — client and server are separate processes.
 
-Not implemented: authentication of MCP callers, remote (non-loopback) access, a REST API, and further tools such as saved evaluation runs. The technical detail is in `docs/architecture.md` §14.
+Not implemented: authentication of MCP callers, remote (non-loopback) access, and further tools such as saved evaluation runs. The technical detail is in `docs/architecture.md` §14.
+
+## REST API
+
+`api_server.py` offers the same question answering to any HTTP client — curl, scripts, or the interactive OpenAPI page — as a separate local process. It is a sibling of the MCP server, not part of the dashboard:
+
+```mermaid
+flowchart LR
+    subgraph clients["HTTP clients"]
+        curl["curl · scripts · any HTTP client"]
+        docs["OpenAPI page /docs"]
+    end
+    rest["REST API · loopback only<br/>POST /v1/ask · GET /v1/health<br/>GET /v1/info · /v1/capabilities · /v1/subjects<br/>GET /healthz liveness<br/>role fixed at startup"]
+    views["Shared public views<br/>the same safe results MCP returns"]
+    boundary["Application boundary"]
+    ragcore["RAG core<br/>access control enforced here"]
+    curl -->|"JSON over HTTP"| rest
+    docs --> rest
+    rest --> boundary
+    boundary --> ragcore
+    rest -.->|"responses"| views
+```
+
+- **Endpoints:** `POST /v1/ask` answers a question; `GET /v1/health` checks the knowledge base's readiness (a backend check; 200 when ready, 503 when not); `GET /healthz` only confirms the process is up (no backend call); `/v1/info`, `/v1/capabilities` and `/v1/subjects` describe the server. The OpenAPI page (`/docs`, `/openapi.json`) is the authoritative contract.
+- **Role model:** fixed at startup (`--role employee` or `--role manager`) and validated by the same fail-closed access policy. A request cannot override it: a body that names a role is rejected.
+- **Public output:** the same projection MCP returns — the answer and source metadata, never document text, vector scores or infrastructure identifiers. A flagged response withholds the answer, sources and judgement, and is still a normal result. `not_found` is a normal result too.
+- **Errors:** RFC 9457 `application/problem+json` with fixed wording: invalid input 422, a non-JSON body 415, an unavailable knowledge base or model service 503, a timeout 504.
+- **Security:** there is no authentication in this version, so the server accepts loopback connections only, rejects a foreign `Host` header, accepts JSON bodies only and enables no CORS — a web page cannot submit a question cross-site.
+
+Not implemented: authentication, remote access, rate limiting and a server-side timeout. The technical detail is in `docs/architecture.md` §15.
 
 ---
 
@@ -358,7 +384,8 @@ Not implemented: authentication of MCP callers, remote (non-loopback) access, a 
 | About / Architecture UI page | Implemented |
 | Streamlit Community Cloud deployment | Planned (the app is prepared for it; the deployment itself is not part of the repository) |
 | Shared pipeline module separating chat from evaluation code | Planned follow-up (deferred) |
-| HTTP API layer | Future extension point |
+| REST API — `/v1/ask`, readiness and liveness, metadata endpoints; loopback only, role fixed at startup | Implemented |
+| REST API — authentication, remote access, rate limiting | Planned |
 | MCP integration — server over STDIO and Streamable HTTP (three tools + one resource), CLI client, dashboard MCP page | Implemented |
 | MCP integration — authentication of MCP callers, further tools | Planned |
 | Real user authentication and authorization | Future (current roles are demo controls) |
