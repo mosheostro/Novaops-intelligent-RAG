@@ -98,6 +98,17 @@ class ImportBoundaryTests(unittest.TestCase):
     def test_no_module_except_the_mcp_client_imports_anyio(self):
         self.assertEqual(self._offenders("anyio", allowed=frozenset({"mcp_client.py"})), [])
 
+    def test_the_shared_public_views_import_no_transport_or_ui_package(self):
+        source = (ROOT / "public_views.py").read_text(encoding="utf-8")
+        for package in ("mcp", "mcp_server", "mcp_client", "fastapi", "starlette", "uvicorn", "anyio",
+                        "streamlit", "ui"):
+            with self.subTest(package=package):
+                self.assertFalse(_imports_package(source, package))
+
+    def test_only_transport_adapters_import_the_public_views(self):
+        self.assertEqual(self._offenders("public_views", allowed=frozenset({"mcp_server.py", "api_server.py"})),
+                         [])
+
 
 class ImportDetectionTests(unittest.TestCase):
     """The detector itself, so a passing boundary test cannot be a blind one."""

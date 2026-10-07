@@ -1,0 +1,925 @@
+{
+  "capabilities": {
+    "employee": {
+      "configurations": [
+        {
+          "context_selection": "all_retrieved",
+          "name": "baseline",
+          "reranking": false,
+          "subject_filter": false,
+          "summary": "Vector search within the role's permitted content."
+        },
+        {
+          "context_selection": "all_retrieved",
+          "name": "filter-only",
+          "reranking": false,
+          "subject_filter": true,
+          "summary": "Subject filter planned from the question (fails open), then vector search."
+        },
+        {
+          "context_selection": "fixed_count",
+          "name": "rerank-only",
+          "reranking": true,
+          "subject_filter": false,
+          "summary": "Larger candidate pool, LLM reranking, a fixed number of top chunks kept."
+        },
+        {
+          "context_selection": "fixed_count",
+          "name": "filter + rerank static",
+          "reranking": true,
+          "subject_filter": true,
+          "summary": "Subject filter, LLM reranking, a fixed number of top chunks kept."
+        },
+        {
+          "context_selection": "relevance_threshold",
+          "name": "filter + rerank dynamic",
+          "reranking": true,
+          "subject_filter": true,
+          "summary": "Subject filter, LLM reranking, only chunks above a relevance threshold kept; may return not_found."
+        }
+      ],
+      "contract_version": 1,
+      "default_configuration": "filter + rerank dynamic",
+      "judgement": {
+        "default": false,
+        "judges": [
+          "faithfulness",
+          "context_relevance",
+          "context_completeness",
+          "refusal"
+        ],
+        "note": "Adds 3-4 model calls. context_completeness is skipped when no context is selected or the answer is a refusal. Judgement is withheld when the security audit fails.",
+        "parameter": "judge"
+      },
+      "options": {
+        "question_max_chars": 2000,
+        "updated_on_or_after": "Optional ISO date. Keeps documents updated on or after it. Narrows retrieval; never widens access."
+      },
+      "role": {
+        "configured": "employee",
+        "note": "Server role fixed at startup; selects the audience filter. Not authentication and not the identity of the MCP client.",
+        "supported": [
+          "employee",
+          "manager"
+        ]
+      },
+      "security": {
+        "access_filter": "Always applied from the configured role; unsupported roles are rejected (fail closed).",
+        "security_audit": "Every response includes security_audit. If retrieval returns content outside the role's permitted audience, the answer, sources and judgement are withheld."
+      },
+      "subjects": [
+        "pay_and_benefits",
+        "time_off_and_leave",
+        "severance_and_termination",
+        "hiring_and_onboarding",
+        "careers_titles_and_promotions",
+        "performance_and_feedback",
+        "managing_people",
+        "devices_security_and_systems",
+        "company_culture_and_norms"
+      ],
+      "subjects_resource": "rag://subjects"
+    },
+    "manager": {
+      "configurations": [
+        {
+          "context_selection": "all_retrieved",
+          "name": "baseline",
+          "reranking": false,
+          "subject_filter": false,
+          "summary": "Vector search within the role's permitted content."
+        },
+        {
+          "context_selection": "all_retrieved",
+          "name": "filter-only",
+          "reranking": false,
+          "subject_filter": true,
+          "summary": "Subject filter planned from the question (fails open), then vector search."
+        },
+        {
+          "context_selection": "fixed_count",
+          "name": "rerank-only",
+          "reranking": true,
+          "subject_filter": false,
+          "summary": "Larger candidate pool, LLM reranking, a fixed number of top chunks kept."
+        },
+        {
+          "context_selection": "fixed_count",
+          "name": "filter + rerank static",
+          "reranking": true,
+          "subject_filter": true,
+          "summary": "Subject filter, LLM reranking, a fixed number of top chunks kept."
+        },
+        {
+          "context_selection": "relevance_threshold",
+          "name": "filter + rerank dynamic",
+          "reranking": true,
+          "subject_filter": true,
+          "summary": "Subject filter, LLM reranking, only chunks above a relevance threshold kept; may return not_found."
+        }
+      ],
+      "contract_version": 1,
+      "default_configuration": "filter + rerank dynamic",
+      "judgement": {
+        "default": false,
+        "judges": [
+          "faithfulness",
+          "context_relevance",
+          "context_completeness",
+          "refusal"
+        ],
+        "note": "Adds 3-4 model calls. context_completeness is skipped when no context is selected or the answer is a refusal. Judgement is withheld when the security audit fails.",
+        "parameter": "judge"
+      },
+      "options": {
+        "question_max_chars": 2000,
+        "updated_on_or_after": "Optional ISO date. Keeps documents updated on or after it. Narrows retrieval; never widens access."
+      },
+      "role": {
+        "configured": "manager",
+        "note": "Server role fixed at startup; selects the audience filter. Not authentication and not the identity of the MCP client.",
+        "supported": [
+          "employee",
+          "manager"
+        ]
+      },
+      "security": {
+        "access_filter": "Always applied from the configured role; unsupported roles are rejected (fail closed).",
+        "security_audit": "Every response includes security_audit. If retrieval returns content outside the role's permitted audience, the answer, sources and judgement are withheld."
+      },
+      "subjects": [
+        "pay_and_benefits",
+        "time_off_and_leave",
+        "severance_and_termination",
+        "hiring_and_onboarding",
+        "careers_titles_and_promotions",
+        "performance_and_feedback",
+        "managing_people",
+        "devices_security_and_systems",
+        "company_culture_and_norms"
+      ],
+      "subjects_resource": "rag://subjects"
+    }
+  },
+  "project_ask_result": {
+    "not_found": {
+      "answer": "SENTINEL generated answer",
+      "config": "filter + rerank dynamic",
+      "cutoff": "2025-01-01",
+      "judgement": null,
+      "planned_subjects": [
+        "time_off_and_leave"
+      ],
+      "retrieval": {
+        "candidates_considered": 2
+      },
+      "role": "employee",
+      "security_audit": {
+        "explanation": null,
+        "violating_source_count": 0,
+        "violation": false
+      },
+      "sources": [],
+      "status": "not_found"
+    },
+    "security_violation": {
+      "answer": "The answer was withheld because a security check failed for this request. Please report this to the system operator.",
+      "config": "filter + rerank dynamic",
+      "cutoff": "2025-01-01",
+      "judgement": null,
+      "planned_subjects": [
+        "time_off_and_leave"
+      ],
+      "retrieval": {
+        "candidates_considered": 3
+      },
+      "role": "employee",
+      "security_audit": {
+        "explanation": "Access-control audit failed: retrieval returned content outside the audience permitted for the configured role. The answer, sources and judgement were withheld.",
+        "violating_source_count": 1,
+        "violation": true
+      },
+      "sources": [],
+      "status": "selected"
+    },
+    "selected": {
+      "answer": "SENTINEL generated answer",
+      "config": "filter + rerank dynamic",
+      "cutoff": "2025-01-01",
+      "judgement": null,
+      "planned_subjects": [
+        "time_off_and_leave"
+      ],
+      "retrieval": {
+        "candidates_considered": 2
+      },
+      "role": "employee",
+      "security_audit": {
+        "explanation": null,
+        "violating_source_count": 0,
+        "violation": false
+      },
+      "sources": [
+        {
+          "corpus": "handbook",
+          "last_updated": "2025-03-01",
+          "rank": 1,
+          "rerank_score": 0.9,
+          "source": "pto.md",
+          "subjects": [
+            "time_off_and_leave"
+          ]
+        },
+        {
+          "corpus": "handbook",
+          "last_updated": "2025-03-01",
+          "rank": 2,
+          "rerank_score": 0.6,
+          "source": "holidays.md",
+          "subjects": [
+            "time_off_and_leave"
+          ]
+        }
+      ],
+      "status": "selected"
+    },
+    "selected_judged": {
+      "answer": "SENTINEL generated answer",
+      "config": "filter + rerank dynamic",
+      "cutoff": "2025-01-01",
+      "judgement": {
+        "completeness": 0.7,
+        "completeness_reason": "mostly complete",
+        "context_relevance": 0.8,
+        "context_relevance_reason": "relevant",
+        "faithfulness": 0.9,
+        "faithfulness_reason": "grounded in the context",
+        "refused": false
+      },
+      "planned_subjects": [
+        "time_off_and_leave"
+      ],
+      "retrieval": {
+        "candidates_considered": 2
+      },
+      "role": "employee",
+      "security_audit": {
+        "explanation": null,
+        "violating_source_count": 0,
+        "violation": false
+      },
+      "sources": [
+        {
+          "corpus": "handbook",
+          "last_updated": "2025-03-01",
+          "rank": 1,
+          "rerank_score": 0.9,
+          "source": "pto.md",
+          "subjects": [
+            "time_off_and_leave"
+          ]
+        },
+        {
+          "corpus": "handbook",
+          "last_updated": "2025-03-01",
+          "rank": 2,
+          "rerank_score": 0.6,
+          "source": "holidays.md",
+          "subjects": [
+            "time_off_and_leave"
+          ]
+        }
+      ],
+      "status": "selected"
+    }
+  },
+  "project_health": {
+    "creating": {
+      "chunk_count": null,
+      "collection_state": "CREATING",
+      "data_plane_reachable": null,
+      "index_present": null,
+      "ready": false
+    },
+    "data_plane_unreachable": {
+      "chunk_count": null,
+      "collection_state": "ACTIVE",
+      "data_plane_reachable": false,
+      "index_present": null,
+      "ready": false
+    },
+    "empty_index": {
+      "chunk_count": 0,
+      "collection_state": "ACTIVE",
+      "data_plane_reachable": true,
+      "index_present": true,
+      "ready": false
+    },
+    "missing": {
+      "chunk_count": null,
+      "collection_state": "MISSING",
+      "data_plane_reachable": null,
+      "index_present": null,
+      "ready": false
+    },
+    "no_index": {
+      "chunk_count": null,
+      "collection_state": "ACTIVE",
+      "data_plane_reachable": true,
+      "index_present": false,
+      "ready": false
+    },
+    "ready": {
+      "chunk_count": 400,
+      "collection_state": "ACTIVE",
+      "data_plane_reachable": true,
+      "index_present": true,
+      "ready": true
+    }
+  },
+  "resources": [
+    {
+      "description": "The fixed subject vocabulary the planner and the subject filter use.",
+      "mime_type": "application/json",
+      "name": "subjects",
+      "uri": "rag://subjects"
+    }
+  ],
+  "server": {
+    "name": "novaops-knowledge-base",
+    "version": "0.2.0"
+  },
+  "tools": {
+    "ask_rag": {
+      "description": "Answer a question from the NovaOps knowledge base (employee handbook and, for the\nmanager role, the manager playbook), as the role this server was started with.\n`config` picks the retrieval configuration; `judge` adds LLM quality scores (slower);\n`updated_on_or_after` keeps only documents updated on or after that date.\nA first call after an idle period can take a while as the knowledge base warms up.",
+      "input_schema": {
+        "properties": {
+          "config": {
+            "default": "filter + rerank dynamic",
+            "enum": [
+              "baseline",
+              "filter-only",
+              "rerank-only",
+              "filter + rerank static",
+              "filter + rerank dynamic"
+            ],
+            "title": "Config",
+            "type": "string"
+          },
+          "judge": {
+            "default": false,
+            "title": "Judge",
+            "type": "boolean"
+          },
+          "question": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "updated_on_or_after": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional ISO date, YYYY-MM-DD (e.g. 2025-01-31). Keeps only documents updated on or after it.",
+            "title": "Updated On Or After"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "ask_ragArguments",
+        "type": "object"
+      },
+      "output_schema": {
+        "$defs": {
+          "LiveJudgement": {
+            "description": "Judge results for an ad-hoc question asked through the UI. `refused` is the\nOBSERVED behavior from the same refusal judge batch evaluation uses; there is\ndeliberately no refusal_ok, because a custom question has no expected\nbehavior to compare against.\n\n`completeness` is judged against the RETRIEVED CONTEXT\n(judges.context_completeness) \u2014 not against key_facts, which a custom\nquestion does not have \u2014 so it must never be mixed with\nContentEvaluation.completeness. It is None (not judged, no model call) when\nthere is no usable context: zero selected chunks, or a refusal.",
+            "properties": {
+              "completeness": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Completeness"
+              },
+              "completeness_reason": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Completeness Reason"
+              },
+              "context_relevance": {
+                "title": "Context Relevance",
+                "type": "number"
+              },
+              "context_relevance_reason": {
+                "title": "Context Relevance Reason",
+                "type": "string"
+              },
+              "faithfulness": {
+                "title": "Faithfulness",
+                "type": "number"
+              },
+              "faithfulness_reason": {
+                "title": "Faithfulness Reason",
+                "type": "string"
+              },
+              "refused": {
+                "title": "Refused",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "faithfulness",
+              "faithfulness_reason",
+              "context_relevance",
+              "context_relevance_reason",
+              "refused",
+              "completeness",
+              "completeness_reason"
+            ],
+            "title": "LiveJudgement",
+            "type": "object"
+          },
+          "RetrievalInfo": {
+            "properties": {
+              "candidates_considered": {
+                "title": "Candidates Considered",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "candidates_considered"
+            ],
+            "title": "RetrievalInfo",
+            "type": "object"
+          },
+          "SecurityAuditView": {
+            "description": "The public face of the domain SecurityAudit: whether it failed and how many\nsources it flagged \u2014 never which ones.",
+            "properties": {
+              "explanation": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Explanation"
+              },
+              "violating_source_count": {
+                "title": "Violating Source Count",
+                "type": "integer"
+              },
+              "violation": {
+                "title": "Violation",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "violation",
+              "violating_source_count",
+              "explanation"
+            ],
+            "title": "SecurityAuditView",
+            "type": "object"
+          },
+          "SourceRef": {
+            "description": "A selected chunk's provenance \u2014 never its text.",
+            "properties": {
+              "corpus": {
+                "title": "Corpus",
+                "type": "string"
+              },
+              "last_updated": {
+                "title": "Last Updated",
+                "type": "string"
+              },
+              "rank": {
+                "title": "Rank",
+                "type": "integer"
+              },
+              "rerank_score": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Rerank Score"
+              },
+              "source": {
+                "title": "Source",
+                "type": "string"
+              },
+              "subjects": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Subjects",
+                "type": "array"
+              }
+            },
+            "required": [
+              "rank",
+              "source",
+              "corpus",
+              "subjects",
+              "last_updated",
+              "rerank_score"
+            ],
+            "title": "SourceRef",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "answer": {
+            "title": "Answer",
+            "type": "string"
+          },
+          "config": {
+            "enum": [
+              "baseline",
+              "filter-only",
+              "rerank-only",
+              "filter + rerank static",
+              "filter + rerank dynamic"
+            ],
+            "title": "Config",
+            "type": "string"
+          },
+          "cutoff": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cutoff"
+          },
+          "judgement": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/LiveJudgement"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "planned_subjects": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planned Subjects"
+          },
+          "retrieval": {
+            "$ref": "#/$defs/RetrievalInfo"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "security_audit": {
+            "$ref": "#/$defs/SecurityAuditView"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/$defs/SourceRef"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "selected",
+              "not_found"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "answer",
+          "config",
+          "role",
+          "status",
+          "planned_subjects",
+          "cutoff",
+          "retrieval",
+          "sources",
+          "security_audit",
+          "judgement"
+        ],
+        "title": "AskRagResult",
+        "type": "object"
+      }
+    },
+    "get_rag_capabilities": {
+      "description": "What this NovaOps knowledge-base server can do: its configured role, the answer\nconfigurations and their behavior, the default, judging, security behavior,\ninput options and the subject vocabulary.",
+      "input_schema": {
+        "properties": {},
+        "title": "get_rag_capabilitiesArguments",
+        "type": "object"
+      },
+      "output_schema": {
+        "$defs": {
+          "ConfigurationCapability": {
+            "properties": {
+              "context_selection": {
+                "enum": [
+                  "all_retrieved",
+                  "fixed_count",
+                  "relevance_threshold"
+                ],
+                "title": "Context Selection",
+                "type": "string"
+              },
+              "name": {
+                "enum": [
+                  "baseline",
+                  "filter-only",
+                  "rerank-only",
+                  "filter + rerank static",
+                  "filter + rerank dynamic"
+                ],
+                "title": "Name",
+                "type": "string"
+              },
+              "reranking": {
+                "title": "Reranking",
+                "type": "boolean"
+              },
+              "subject_filter": {
+                "title": "Subject Filter",
+                "type": "boolean"
+              },
+              "summary": {
+                "title": "Summary",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "subject_filter",
+              "reranking",
+              "context_selection",
+              "summary"
+            ],
+            "title": "ConfigurationCapability",
+            "type": "object"
+          },
+          "JudgementCapability": {
+            "properties": {
+              "default": {
+                "title": "Default",
+                "type": "boolean"
+              },
+              "judges": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Judges",
+                "type": "array"
+              },
+              "note": {
+                "title": "Note",
+                "type": "string"
+              },
+              "parameter": {
+                "const": "judge",
+                "title": "Parameter",
+                "type": "string"
+              }
+            },
+            "required": [
+              "parameter",
+              "default",
+              "judges",
+              "note"
+            ],
+            "title": "JudgementCapability",
+            "type": "object"
+          },
+          "OptionsCapability": {
+            "properties": {
+              "question_max_chars": {
+                "title": "Question Max Chars",
+                "type": "integer"
+              },
+              "updated_on_or_after": {
+                "title": "Updated On Or After",
+                "type": "string"
+              }
+            },
+            "required": [
+              "question_max_chars",
+              "updated_on_or_after"
+            ],
+            "title": "OptionsCapability",
+            "type": "object"
+          },
+          "RoleCapability": {
+            "properties": {
+              "configured": {
+                "title": "Configured",
+                "type": "string"
+              },
+              "note": {
+                "title": "Note",
+                "type": "string"
+              },
+              "supported": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Supported",
+                "type": "array"
+              }
+            },
+            "required": [
+              "configured",
+              "supported",
+              "note"
+            ],
+            "title": "RoleCapability",
+            "type": "object"
+          },
+          "SecurityCapability": {
+            "properties": {
+              "access_filter": {
+                "title": "Access Filter",
+                "type": "string"
+              },
+              "security_audit": {
+                "title": "Security Audit",
+                "type": "string"
+              }
+            },
+            "required": [
+              "access_filter",
+              "security_audit"
+            ],
+            "title": "SecurityCapability",
+            "type": "object"
+          }
+        },
+        "description": "What this server can do \u2014 semantics, never infrastructure or tuning values.",
+        "properties": {
+          "configurations": {
+            "items": {
+              "$ref": "#/$defs/ConfigurationCapability"
+            },
+            "title": "Configurations",
+            "type": "array"
+          },
+          "contract_version": {
+            "title": "Contract Version",
+            "type": "integer"
+          },
+          "default_configuration": {
+            "enum": [
+              "baseline",
+              "filter-only",
+              "rerank-only",
+              "filter + rerank static",
+              "filter + rerank dynamic"
+            ],
+            "title": "Default Configuration",
+            "type": "string"
+          },
+          "judgement": {
+            "$ref": "#/$defs/JudgementCapability"
+          },
+          "options": {
+            "$ref": "#/$defs/OptionsCapability"
+          },
+          "role": {
+            "$ref": "#/$defs/RoleCapability"
+          },
+          "security": {
+            "$ref": "#/$defs/SecurityCapability"
+          },
+          "subjects": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Subjects",
+            "type": "array"
+          },
+          "subjects_resource": {
+            "title": "Subjects Resource",
+            "type": "string"
+          }
+        },
+        "required": [
+          "contract_version",
+          "role",
+          "configurations",
+          "default_configuration",
+          "judgement",
+          "security",
+          "options",
+          "subjects",
+          "subjects_resource"
+        ],
+        "title": "Capabilities",
+        "type": "object"
+      }
+    },
+    "health_check": {
+      "description": "Whether the knowledge base is ready to answer: collection state, index presence and\nchunk count. Read-only. An unhealthy collection is a normal result (ready=false); a\ncall after an idle period also warms the knowledge base up.",
+      "input_schema": {
+        "properties": {},
+        "title": "health_checkArguments",
+        "type": "object"
+      },
+      "output_schema": {
+        "description": "Readiness of the knowledge base, without any infrastructure identifier.",
+        "properties": {
+          "chunk_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunk Count"
+          },
+          "collection_state": {
+            "title": "Collection State",
+            "type": "string"
+          },
+          "data_plane_reachable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Plane Reachable"
+          },
+          "index_present": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Index Present"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ready",
+          "collection_state",
+          "index_present",
+          "chunk_count",
+          "data_plane_reachable"
+        ],
+        "title": "HealthResult",
+        "type": "object"
+      }
+    }
+  }
+}

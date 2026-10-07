@@ -1,0 +1,4 @@
+-r requirements.txt
+# REST API (api_server.py) — optional, like the MCP SDK; never needed by the dashboard.
+fastapi>=0.142,<1
+uvicorn>=0.30
